@@ -1,0 +1,11 @@
+{
+  "name": "sat-baza-mazano-2026",
+  "version": "2.0.0",
+  "description": "Plataforma SAT Baza Mazano 2.0 (2026/2027) — Consola de Mando (Jacobo/Leandro), App Móvil Técnicos (Alex/Jacobo/Dioni/Roberto) y Panel Administración (Silvia/Lidia) conectado a Aliquo SQL",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node scripts/seed_from_excel.mjs"
+  },
+  "author": "Laibe Studio AI — Valladolid"
+}
