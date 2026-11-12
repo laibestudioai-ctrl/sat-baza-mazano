@@ -20,15 +20,135 @@ const crypto = require('crypto');
 
 const PORT = parseInt(process.env.PORT || '3090', 10);
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
+const SEED_DIR = process.env.SEED_DIR ? path.resolve(process.env.SEED_DIR) : path.join(__dirname, 'seed');
+const CATALOG_DIR = process.env.CATALOG_DIR ? path.resolve(process.env.CATALOG_DIR) : path.join(__dirname, 'catalog');
+const MEDIA_DIR = path.join(DATA_DIR, 'media');
 const DB_FILE = path.join(DATA_DIR, 'sat_db.json');
+
+// Prioridad de caché Aliquo: 1) sync en vivo en DATA_DIR, 2) imagen actualizada en CATALOG_DIR, 3) DATA_DIR, 4) repositorio padre
+const LIVE_ALIQUO_FILE = path.join(DATA_DIR, 'clientes_aliquo_cache_live.json');
+const CATALOG_ALIQUO_FILE = path.join(CATALOG_DIR, 'clientes_aliquo_cache.json');
 const LOCAL_ALIQUO_FILE = path.join(DATA_DIR, 'clientes_aliquo_cache.json');
 const EXTERNAL_ALIQUO_FILE = path.resolve(__dirname, '../03_Datos_Tarifas_y_Stock/clientes_aliquo_cache.json');
-const ALIQUO_CACHE_FILE = fs.existsSync(LOCAL_ALIQUO_FILE) ? LOCAL_ALIQUO_FILE : EXTERNAL_ALIQUO_FILE;
+const ALIQUO_CACHE_FILE = [LIVE_ALIQUO_FILE, CATALOG_ALIQUO_FILE, LOCAL_ALIQUO_FILE, EXTERNAL_ALIQUO_FILE].find(f => fs.existsSync(f)) || LOCAL_ALIQUO_FILE;
 
 // Asegurar carpetas
-if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR, { recursive: true });
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+[PUBLIC_DIR, DATA_DIR, MEDIA_DIR, path.join(MEDIA_DIR, 'fichajes')].forEach(dir => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+// Helper fecha/hora local España (Europe/Madrid -> "YYYY-MM-DD HH:MM")
+function nowMadridStr(ms = Date.now()) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Madrid',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(new Date(ms));
+    const map = {};
+    for (const p of parts) map[p.type] = p.value;
+    const hr = map.hour === '24' ? '00' : map.hour;
+    return `${map.year}-${map.month}-${map.day} ${hr}:${map.minute}`;
+  } catch (e) {
+    return new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+  }
+}
+
+function escapeHtmlServer(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function persistMediaDataUrl(dataUrl, subdir, filenameBase) {
+  const val = String(dataUrl || '');
+  const m = val.match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/i);
+  if (!m) return val;
+  try {
+    const ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+    const safeBase = String(filenameBase || 'asset').replace(/[^a-zA-Z0-9_-]/g, '');
+    const relDir = path.join(MEDIA_DIR, subdir);
+    if (!fs.existsSync(relDir)) fs.mkdirSync(relDir, { recursive: true });
+    const fileName = `${safeBase}.${ext}`;
+    fs.writeFileSync(path.join(relDir, fileName), Buffer.from(m[2], 'base64'));
+    return `/media/${subdir}/${fileName}`;
+  } catch (e) {
+    console.warn('⚠️ Error persistiendo media en disco:', e.message);
+    return val;
+  }
+}
+
+function getNextAvisoNumero() {
+  const maxNumero = (db.avisos || []).reduce(
+    (max, a) => (a.numero > max && a.numero < 90000 ? a.numero : max),
+    2710
+  );
+  return maxNumero + 1;
+}
+
+// =========================================================================
+// AUTENTICACIÓN POR PIN Y PERMISOS POR ROL (FASES 1)
+// =========================================================================
+const AUTH_SECRET = process.env.SAT_AUTH_SECRET || crypto.createHash('sha256').update('SAT_BAZA_2026_LAIBE_HMAC_KEY').digest('hex');
+
+const PIN_USERS = [
+  { id: 'juanpablo', nombre: 'Juan Pablo (Admin)', pin: process.env.PIN_ADMIN || '445215', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
+  { id: 'leandro', nombre: 'Leandro (Dirección)', pin: process.env.PIN_LEANDRO || '1347', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
+  { id: 'silvia', nombre: 'Silvia (Administración)', pin: process.env.PIN_SILVIA || '1010', roles: ['admin', 'mando'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
+  { id: 'chus', nombre: 'Chus (Cuentas y Admin)', pin: process.env.PIN_CHUS || '2866', roles: ['admin', 'mando'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
+  { id: 'jacobo', nombre: 'Jacobo (Jefe SAT)', pin: process.env.PIN_JACOBO || '9553', roles: ['mando', 'tecnico'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
+  { id: 'rosa', nombre: 'Rosa (Atención/Comercial)', pin: process.env.PIN_ROSA || '1601', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
+  { id: 'lidia', nombre: 'Lidia (SAT y Repuestos)', pin: process.env.PIN_LIDIA || '6272', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
+  { id: 'alex', nombre: 'Alex (Técnico SAT)', pin: process.env.PIN_ALEX || '3102', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'alejandro.bazamazano@gmail.com' },
+  { id: 'dioni', nombre: 'Dioni (Técnico SAT)', pin: process.env.PIN_DIONI || '3204', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'dioni.bazamazano@gmail.com' },
+  { id: 'roberto', nombre: 'Roberto (Técnico SAT)', pin: process.env.PIN_ROBERTO || '3305', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'rober.bazamazano@gmail.com' },
+  { id: 'ismael', nombre: 'Ismael (Técnico SAT)', pin: process.env.PIN_ISMAEL || '3406', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'isma.bazamazano@gmail.com' }
+];
+
+function signAuthToken(user) {
+  const payload = {
+    id: user.id,
+    nombre: user.nombre,
+    roles: user.roles,
+    defaultRole: user.defaultRole,
+    canSeeAdmin: user.canSeeAdmin,
+    canSeeNotasAdmin: user.canSeeNotasAdmin,
+    lockedTechEmail: user.lockedTechEmail,
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 días de sesión en furgoneta/nave
+  };
+  const b64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(b64).digest('base64url');
+  return `${b64}.${sig}`;
+}
+
+function verifyAuthToken(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const [b64, sig] = token.split('.');
+  const expectedSig = crypto.createHmac('sha256', AUTH_SECRET).update(b64).digest('base64url');
+  if (sig !== expectedSig) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString('utf8'));
+    if (!payload || (payload.exp && payload.exp < Date.now())) return null;
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+function extractRequestUser(req, parsedUrl) {
+  const authHeader = req.headers['authorization'] || '';
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const queryToken = parsedUrl && parsedUrl.searchParams ? (parsedUrl.searchParams.get('token') || '') : '';
+  return verifyAuthToken(bearer || queryToken);
+}
 
 // Coordenadas Base Baza Mazano (C/ Annapurna 22, Pinar de Jalón, 47013 Valladolid)
 const HQ_COORDS = { lat: 41.6191565, lng: -4.7209136 };
@@ -136,6 +256,11 @@ let db = {
 
 function loadDb() {
   try {
+    const seedDbFile = path.join(SEED_DIR, 'sat_db.json');
+    if (!fs.existsSync(DB_FILE) && fs.existsSync(seedDbFile)) {
+      fs.copyFileSync(seedDbFile, DB_FILE);
+      console.log('🌱 Primer arranque en volumen vacío: sat_db.json copiado desde /app/seed.');
+    }
     if (fs.existsSync(DB_FILE)) {
       db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
       console.log(`✅ Base de datos SAT Baza Mazano 2.0 cargada: ${db.avisos.length} avisos, ${db.citas.length} citas, ${db.fichajes.length} fichajes, ${db.contratosCm.length} contratos CM.`);
@@ -153,43 +278,55 @@ let aliquoLocalCache = [];
 try {
   if (fs.existsSync(ALIQUO_CACHE_FILE)) {
     aliquoLocalCache = JSON.parse(fs.readFileSync(ALIQUO_CACHE_FILE, 'utf8'));
-    console.log(`📦 Caché local de clientes Aliquo cargada: ${aliquoLocalCache.length} clientes.`);
+    console.log(`📦 Caché local de clientes Aliquo cargada: ${aliquoLocalCache.length} clientes (fuente: ${path.basename(path.dirname(ALIQUO_CACHE_FILE))}/${path.basename(ALIQUO_CACHE_FILE)}).`);
   }
 } catch (e) {
   console.warn('⚠️ No se pudo cargar clientes_aliquo_cache.json:', e.message);
 }
 
 let saveTimeout = null;
-function saveDb() {
+function writeDbAtomicSync() {
+  try {
+    db.meta = db.meta || {};
+    db.meta.updatedAt = new Date().toISOString();
+    db.meta.counts = {
+      avisos: (db.avisos || []).length,
+      contratosCm: (db.contratosCm || []).length,
+      citas: (db.citas || []).length,
+      fichajes: (db.fichajes || []).length,
+      operarios: (db.operarios || []).length,
+      gastosVehiculos: (db.gastosVehiculos || []).length,
+      repuestos: (db.repuestos || []).length,
+      marcas: (db.marcas || []).length
+    };
+    const tmpFile = `${DB_FILE}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf8');
+    fs.renameSync(tmpFile, DB_FILE);
+  } catch (e) {
+    console.error('❌ Error guardando sat_db.json:', e.message);
+  }
+}
+
+function saveDb(immediate = false) {
   if (saveTimeout) clearTimeout(saveTimeout);
+  if (immediate) {
+    saveTimeout = null;
+    writeDbAtomicSync();
+    return;
+  }
   saveTimeout = setTimeout(() => {
-    try {
-      db.meta = db.meta || {};
-      db.meta.updatedAt = new Date().toISOString();
-      db.meta.counts = {
-        avisos: db.avisos.length,
-        contratosCm: db.contratosCm.length,
-        citas: db.citas.length,
-        fichajes: db.fichajes.length,
-        operarios: db.operarios.length,
-        gastosVehiculos: db.gastosVehiculos.length,
-        repuestos: db.repuestos.length,
-        marcas: db.marcas.length
-      };
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
-    } catch (e) {
-      console.error('❌ Error guardando sat_db.json:', e.message);
-    }
+    saveTimeout = null;
+    writeDbAtomicSync();
   }, 150);
 }
 
 // =========================================================================
-// CONEXIÓN EN VIVO A ALIQUO SQL SERVER WEBAPI (Opción B Confirmada)
+// CONEXIÓN EN VIVO A ALIQUO SQL SERVER WEBAPI (Lectura en Fase 1)
 // =========================================================================
 const ALIQUO_KEYS = [
-  'GFRHR9pjtuJyNTW7XSZ3Ol5WiFK78UHI', // Api.implantaciones@bazamzano.com
-  'CKqkRyKYdoZyNTW7XSZ3OlKtAx5tZlRQ'  // Api.almacenes@bazamzano.com
-];
+  process.env.ALIQUO_API_KEY_1 || 'GFRHR9pjtuJyNTW7XSZ3Ol5WiFK78UHI',
+  process.env.ALIQUO_API_KEY_2 || 'CKqkRyKYdoZyNTW7XSZ3OlKtAx5tZlRQ'
+].filter(Boolean);
 
 function queryAliquoLive(sql, apiKeyIndex = 0) {
   return new Promise((resolve, reject) => {
@@ -309,14 +446,14 @@ function sincronizarAlbaranConAliquo(aviso, fichaje) {
     poblacion: aviso.poblacion || 'VALLADOLID',
     aparato: `${aviso.marca || ''} ${aviso.modelo || ''}`.trim(),
     fechaGenerado: new Date().toISOString(),
-    fechaParte: fichaje.fin || new Date().toISOString().slice(0, 16).replace('T', ' '),
+    fechaParte: fichaje.fin || nowMadridStr(),
     operario: fichaje.operario || 'JACOBO',
     metodoPago: fichaje.metodoPago || 'EFECTIVO',
     totalImporte: Number(fichaje.importe || aviso.sumaImportes || 0),
     notasTrabajo: fichaje.notas || '',
     tieneFirmaCliente: Boolean(fichaje.firma),
     tieneFotoAdjunta: Boolean(fichaje.fotoAdjuntar),
-    estadoSincro: 'SINCRONIZADO_EN_ALIQUO',
+    estadoSincro: 'COLA_PENDIENTE_ALIQUO',
     lineas
   };
 
@@ -354,6 +491,257 @@ function generarCodigoClienteAliquo() {
     }
   }
   return 'C' + String(maxNum + 1).padStart(5, '0');
+}
+
+// Extractor inteligente de datos de contrato y máquina desde el Varios (Observaciones) de Aliquo para SAT 2.0
+const KNOWN_STOVE_BRANDS = [
+  'EDILKAMIN', 'ECOFOREST', 'RAVELLI', 'BRONPI', 'ROCAL', 'DOVRE', 'BODART',
+  'HERGOM', 'LACUNZA', 'MCZ', 'EOSS', 'DIELLE', 'STUV', 'CARBEL', 'RIKA',
+  'CLAM', 'FERLUX', 'PALAZZETTI', 'LA NORDICA', 'NORDICA', 'EXTRAFLAME',
+  'THERMOROSSI', 'METLOR', 'SOLZAIMA', 'JOLLY MEC', 'JOLLY-MEC', 'PIAZZETTA',
+  'INVICTA', 'PANADERO', 'LOTUS', 'CHAZELLES', 'KRATKI', 'KALOR', 'MORETTI',
+  'CADEL', 'FREEPOINT', 'EVA CALOR', 'ARTEL', 'SUPERIOR', 'MONTEGRAPPA',
+  'ITALIANA CAMINI', 'LASIAN', 'DOMUSA', 'FERROLI', 'VAILLANT', 'SAUNIER DUVAL',
+  'BAXI', 'JUNKERS', 'VIESSMANN', 'BOSCH', 'ARISTON', 'COINTRA', 'FAGOR',
+  'ROCA', 'CHOPERA', 'SALGUEDA', 'LLOCAL', 'TRAFORART', 'BARBAS', 'BELLFIRES',
+  'DRU', 'FABER', 'GAZCO', 'STOVAX', 'WANDERS', 'SPARTHERM', 'SCHMID',
+  'AUSTROFLAMM', 'HAAS+SOHN', 'ORANIER', 'JUSTUS', 'ADURO', 'HWAM', 'WIKING',
+  'MORSO', 'JOTUL', 'SCAN', 'CONTURA', 'NORDPEIS', 'RAIS', 'ATTIKA',
+  'HETA', 'TERMATECH', 'RED', 'AMG', 'FM', 'LINCAR', 'COLA', 'ANSELMO COLA',
+  'DAL ZOTTO', 'MAROCCHI', 'UNICAL', 'TATANO', 'BIOCALORA', 'ECOBIOEBRO',
+  'BIOSOLIS', 'THERMOFLUX', 'CENTROMETAL', 'DEFRO', 'ATMOS', 'ATTACK', 'FROLING', 'OKOFEN'
+];
+
+function parseSat20FromObservaciones(obsRaw, clientCode = '') {
+  const obs = String(obsRaw || '').trim();
+  if (!obs || clientCode === '00000') {
+    return {
+      fechaContrato: '',
+      numContrato: '',
+      marcaModelo: '',
+      marca: '',
+      modelo: '',
+      tipoAparato: '',
+      numSerie: '',
+      instalacionBaza: '',
+      relacion: 'INSTALADO'
+    };
+  }
+
+  function normDate(dStr) {
+    if (!dStr) return '';
+    const p = String(dStr).trim().split(/[\/\-]/);
+    if (p.length !== 3) return dStr;
+    const d = p[0].padStart(2, '0');
+    const m = p[1].padStart(2, '0');
+    let y = p[2];
+    if (y.length === 2) {
+      const yi = parseInt(y, 10);
+      y = yi >= 85 ? `19${y}` : `20${y}`;
+    }
+    return `${d}/${m}/${y}`;
+  }
+
+  const lines = obs.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const firstBlock = lines.slice(0, 4).join('\n');
+
+  const notOursRe = /(NO\s+ES\s+NUESTR[OA]|NO\s+ES\s+CLIENTE|NO\s+(?:SE\s+)?(?:LA\s+|LO\s+)?(?:HEMOS\s+)?INSTALAD[OA]\s+POR\s+NOSOTROS|NO\s+(?:SE\s+)?(?:LA\s+|LO\s+)?INSTALAMOS\s+NOSOTROS|M[ÁA]QUINA\s+NO\s+NUESTRA|ESTUFA\s+NO\s+NUESTRA|CHIMENEA\s+QUE\s+NO\s+HEMOS\s+INSTALADO|NO\s+COMPRAD[OA]\s+AQU[ÍI]|APARATO\s+NO\s+NUESTRO|NO\s+INSTALAD[OA]\s+POR\s+BAZA)/i;
+  const selfInstallRe = /\b(SIN\s+INSTALAR|RECOGE\s+EN\s+ALMAC[EÉ]N|RETIRAD[OA]\s+EN\s+ALMAC[EÉ]N|SOLO\s+SUMINISTRO|SERVID[OA]|PORTES\s+DEBIDOS|--\s*ALMAC[EÉ]N)\b/i;
+  const machineKwRe = /\b(ESTUFA|HIDROESTUFA|TERMOESTUFA|CALDERA|CHIMENEA|HOGAR|TERMOHOGAR|TERMOGAR|INSERT|INSERTABLE|CASET|CASSETTE|CASETE|HORNO|BARBACOA|QUEMADOR|BIOCHIMENEA|MODULO|MÓDULO|APARATO|PELKAMIN|PELLKAMIN|BLADE|LISA|LINDA|SUEZ|VICTORIA|LETICIA|ZINGARA|OSTRO|IDRO|ARGO|HABIT|ARC|G\s*-?\s*\d{2,3}|RCR\s*\d+|T\s*[56]\b|BP\s*\d+|RV\s*-?\s*\d+|R\s*-?\s*70|F\s*-?\s*\d{3}|BODART|DOVRE|ROCAL|BRONPI|EDILKAMIN|RAVELLI|HERGOM|LACUNZA|STUV|CARBEL|ECOFOREST|DIELLE|RIKA|CLAM|JOTUL|FABER|KALFIRE|LAVEL|KRATKI|TRAFORA[RT]T?|METLOR|SOLZAIMA|CHAZELLES|PHILIPPE|PHILIPEE|GODIN|INVICTA|SUPRA|PIASTRI|PIAZZETTA|NORDICA|EXTRAFLAME|PANADERO|SALGUEDA|INSFIRE|PIROX|MAJESTIC|DIMPLEX)\b/i;
+
+  const notOursInHeader = notOursRe.test(firstBlock);
+  const notOursAnywhere = notOursRe.test(obs);
+  const isSelfInstall = selfInstallRe.test(firstBlock);
+
+  // 1. Nº Contrato (VA-xxxx, TB-xxxx, TU-xxxx, CF-xxxx)
+  const contracts = [];
+  const cMatches = obs.matchAll(/\b(VA|TB|TU|CF)\s*[-:]?\s*(\d{2,6}(?:\/\d+)?)\b/gi);
+  for (const m of cMatches) {
+    const code = `${m[1].toUpperCase()}-${m[2]}`;
+    if (!contracts.includes(code)) contracts.push(code);
+  }
+  if (contracts.length === 0 && /^(VA|TB|TU)\d+/i.test(clientCode)) {
+    const mc = clientCode.match(/^(VA|TB|TU)(\d+.*)$/i);
+    if (mc) contracts.push(`${mc[1].toUpperCase()}-${mc[2]}`);
+  }
+  const numContrato = contracts.slice(0, 2).join(' / ');
+
+  // 2. Nº Serie
+  let numSerie = '';
+  const mSn = obs.match(/(?:N[º°ÚU]\s*(?:DE\s+)?(?:SERIE|GARANT[ÍI]A|CONTROL)|SERIE|S\/N)\s*[:\.\-]?\s*([A-Z0-9][A-Z0-9\/\-\.\s]{3,25}?)(?=\s*(?:\n|$|COMPRA|INSTALAD|FECHA|PUESTA|PRECIO|IMPORTE|[\(\)]))/i);
+  if (mSn) numSerie = mSn[1].trim().replace(/[-.,;:]+$/, '');
+
+  // 3. Fecha Contrato y Marca/Modelo (justo delante de la marca/modelo comprado)
+  let fechaContrato = '';
+  let marcaModelo = '';
+  let hasInitialBazaPurchase = false;
+
+  for (let i = 0; i < Math.min(12, lines.length); i++) {
+    const line = lines[i];
+    const mFc = line.match(/(?:FECH?A\s+(?:DE\s+)?(?:CONTRAT?O|COMPRA)[^:\d]*[:\s]*|(?:\b(?:VA|TB|TU)\s*[-:]?\s*\d+(?:\/\d+)?\s*[:\-]\s*))(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+    if (mFc && !fechaContrato) {
+      fechaContrato = normDate(mFc[1]);
+      let afterDate = line.slice(mFc.index + mFc[0].length).replace(/^[ .\-:]+|[ .\-:]+$/g, '');
+      afterDate = afterDate.replace(/N[º°]?\s*CONTRATO\s*:\s*[A-Z0-9\-\/]+/gi, '').replace(/^[ .\-:]+|[ .\-:]+$/g, '');
+      const mComp = afterDate.match(/\bCOMPRA?R?\s*[:\-]?\s*(.+)/i);
+      if (mComp) {
+        marcaModelo = mComp[1].trim();
+        hasInitialBazaPurchase = true;
+        break;
+      } else if (afterDate && machineKwRe.test(afterDate) && !/^(VIENE DEL|ANTIGUA|VER CONTRATO)/i.test(afterDate)) {
+        marcaModelo = afterDate;
+        hasInitialBazaPurchase = true;
+        break;
+      }
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const nxt = lines[j];
+        if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/.test(nxt)) break;
+        const mc2 = nxt.match(/^(?:COMPRA?R?\s*[:\-]?\s*)(.+)/i);
+        if (mc2) {
+          marcaModelo = mc2[1].trim();
+          hasInitialBazaPurchase = true;
+          break;
+        } else if (!marcaModelo && !/^(CLIENTE|VIENE DEL|MUJER |MARIDO |VER CONTRATO)/i.test(nxt)) {
+          marcaModelo = nxt.trim();
+          hasInitialBazaPurchase = true;
+          break;
+        }
+      }
+      if (marcaModelo) break;
+    }
+  }
+
+  if (!marcaModelo) {
+    for (let i = 0; i < Math.min(10, lines.length); i++) {
+      const line = lines[i];
+      const mD = line.match(/^[-*•]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b\s*[-:]*\s*(.*)/);
+      if (mD) {
+        const candDate = normDate(mD[1]);
+        const rest = mD[2].trim();
+        const isSatLog = /^\d{1,2}:\d{2}(?::\d{2})?\s*-\s*[A-ZÁÉÍÓÚÑ]+\s*[-:]/i.test(rest) ||
+                         /^(?:JUAN|DIONI|ALEX|JACOBO|ROBERTO|RICKY|RICARDO|NACHO|SALVA|LYDIA|ROSA|ISMAEL)\b\s*[-:]/i.test(rest);
+        let restNoVa = rest.replace(/^(?:VA|TB|TU)\s*[-:]?\s*\d+(?:\/\d+)?\s*[-:]*\s*/i, '').trim();
+        if (!restNoVa && i + 1 < lines.length && !/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/.test(lines[i + 1])) {
+          restNoVa = lines[i + 1].trim();
+        }
+        if (!isSatLog && restNoVa && (/\bCOMPRA?R?\b/i.test(restNoVa) || machineKwRe.test(restNoVa))) {
+          if (!fechaContrato) fechaContrato = candDate;
+          if (!notOursRe.test(restNoVa)) hasInitialBazaPurchase = true;
+          const mComp = restNoVa.match(/\bCOMPRA?R?\s*[:\-]?\s*(.+)/i);
+          marcaModelo = mComp ? mComp[1].trim() : restNoVa;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!marcaModelo) {
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+      const line = lines[i];
+      if (!/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/.test(line) && (machineKwRe.test(line) || /\bCOMPRA?R?\s*:/i.test(line))) {
+        const cl = line.replace(/^(?:VA|TB|TU)\s*[-:]?\s*\d+(?:\/\d+)?\s*[-:]*\s*/i, '').replace(/^COMPRA?R?\s*[:\-]?\s*/i, '').trim();
+        if (cl) {
+          marcaModelo = cl;
+          const mDt = line.match(/\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b/);
+          if (mDt && !fechaContrato) fechaContrato = normDate(mDt[1]);
+          break;
+        }
+      }
+    }
+  }
+
+  if (!marcaModelo) {
+    for (const line of lines) {
+      if (machineKwRe.test(line) && !/^-?\s*DURACI[ÓO]N/i.test(line)) {
+        const cand = line.replace(/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\s*(?:-\s*\d{1,2}:\d{2}(?::\d{2})?)?\s*[-:]*\s*(?:[A-ZÁÉÍÓÚÑ]+\s*[-:]\s*)?/i, '').trim();
+        if (cand) {
+          marcaModelo = cand;
+          break;
+        }
+      }
+    }
+  }
+
+  if (marcaModelo) {
+    marcaModelo = marcaModelo.replace(/\s+/g, ' ').replace(/^[ .,\-:]+|[ .,\-:]+$/g, '');
+    if (marcaModelo.length > 180) marcaModelo = marcaModelo.slice(0, 180).trim() + '...';
+  }
+
+  let marca = '';
+  let modelo = '';
+  const searchPool = (marcaModelo || obs).toUpperCase();
+  for (const b of KNOWN_STOVE_BRANDS) {
+    const re = new RegExp(`\\b${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (re.test(searchPool)) {
+      marca = b;
+      if (marcaModelo) {
+        modelo = marcaModelo
+          .replace(re, ' ')
+          .replace(/\b(ESTUFA|CALDERA|INSERTABLE|INSERT|CASSETTE|CASETE|CHIMENEA|HOGAR|TERMOESTUFA|HIDROESTUFA|DE\s+PELLETS?|PELLETS?|DE\s+LEÑA|LEÑA|DE\s+GAS|GAS)\b/gi, ' ')
+          .replace(/^[\s\-\.,:/\+]+|[\s\-\.,:/\+]+$/g, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+      }
+      break;
+    }
+  }
+  if (!marca && marcaModelo) {
+    if (/\bT\s*-?\s*[56]\b/i.test(marcaModelo)) marca = 'EOSS';
+    else if (/\b(R\s*-?\s*70|RV\s*-?\s*\d+)\b/i.test(marcaModelo)) marca = 'RAVELLI';
+    else if (/\b(BLADE|LISA|LINDA|CHERY|CHERIE|MYA|NARA|TALLY|LOGO|PELLKAMIN|PELKAMIN)\b/i.test(marcaModelo)) marca = 'EDILKAMIN';
+  }
+  if (!modelo && marcaModelo) {
+    modelo = marcaModelo;
+  }
+
+  // Tipo de aparato
+  let tipoAparato = '';
+  if (/(HIDRO|HYDRO|TERMOESTUFA|CALDERA|RADIADORES|ACUMULADOR|AGUA)/i.test(searchPool)) {
+    tipoAparato = /LEÑA/i.test(searchPool) && !/PELLET/i.test(searchPool) ? 'LEÑA AGUA' : 'PELLET AGUA';
+  } else if (/(MIXTA|POLICARBURANTE|POLICOMBUSTIBLE|DIELLE)/i.test(searchPool) && /LEÑA/i.test(searchPool) && /PELLET/i.test(searchPool)) {
+    tipoAparato = 'MIXTA PELLET-LEÑA';
+  } else if (/\b(GAS|PROPANO|BUTANO)\b/i.test(searchPool)) {
+    tipoAparato = 'GAS';
+  } else if (/(LEÑA|CASETE|CASSETTE|HOGAR|DOVRE|ROCAL|BODART|HERGOM|LACUNZA|STUV|CARBEL|CHIMENEA)/i.test(searchPool) && !/PELLET/i.test(searchPool)) {
+    tipoAparato = 'LEÑA AIRE';
+  } else if (marca || marcaModelo) {
+    tipoAparato = 'PELLET AIRE';
+  }
+
+  // Relación / Instalación (Baza vs Externa vs Suministro)
+  let instalacionBaza = '';
+  let relacion = 'INSTALADO';
+  if (notOursInHeader || (notOursAnywhere && !hasInitialBazaPurchase)) {
+    instalacionBaza = 'NO ES DE BAZA (NO INSTALADA POR NOSOTROS)';
+    relacion = 'NO ES NUESTRA';
+  } else if (notOursAnywhere && hasInitialBazaPurchase) {
+    instalacionBaza = 'CLIENTE BAZA + SEGUNDA MÁQUINA EXTERNA (NO NUESTRA)';
+    relacion = 'INSTALADO';
+  } else if (isSelfInstall) {
+    instalacionBaza = 'SUMINISTRO BAZA (SIN INSTALAR / RECOGE ALMACÉN)';
+    relacion = 'SUMINISTRADO';
+  } else if (hasInitialBazaPurchase || fechaContrato || /\b(COMPRA|INSTALAD[OA]|MONTAD[OA]|CONTRATO)\b/i.test(firstBlock)) {
+    instalacionBaza = 'INSTALADA POR BAZA MAZANO';
+    relacion = 'INSTALADO';
+  } else if (marcaModelo) {
+    instalacionBaza = 'SOLO SAT (MÁQUINA IDENTIFICADA)';
+    relacion = 'INSTALADO';
+  } else {
+    instalacionBaza = 'SOLO HISTORIAL SAT / VARIOS';
+    relacion = 'INSTALADO';
+  }
+
+  return {
+    fechaContrato,
+    numContrato,
+    marcaModelo,
+    marca,
+    modelo,
+    tipoAparato,
+    numSerie,
+    instalacionBaza,
+    relacion
+  };
 }
 
 // Búsqueda híbrida (Live SQL Aliquo + Enriquecimiento con historial de aparatos SAT + Caché Local)
@@ -397,20 +785,25 @@ async function searchClientsAliquoAndSat(q) {
 
   const mapByKey = new Map();
 
-  // 1. Procesar filas de Aliquo Live
+  // 1. Procesar filas de Aliquo Live + Extraer los 5 campos SAT 2.0 desde Observaciones
+  const asStr = v => (typeof v === 'string' ? v.trim() : (typeof v === 'number' ? String(v) : ''));
   for (const c of liveRows) {
-    const cod = String(c.Codigo || '').trim();
-    const obs = String(c.Observaciones || '').trim();
+    const cod = asStr(c.Codigo);
+    const obs = asStr(c.Observaciones);
     let va = cod.toUpperCase().startsWith('VA') ? cod.toUpperCase() : '';
     if (!va) {
       const m = obs.match(/\b(VA-?[0-9]{3,6})\b/i);
       if (m) va = m[1].toUpperCase();
     }
-    const fullName = String(c.Nombre || c.SobreNombre || '').trim();
-    const parts = fullName.split(/\s+/);
+    const parsedSat = parseSat20FromObservaciones(obs, cod);
+    // Buscar también en aliquoLocalCache por si tiene campos pre-extraídos
+    const cachedCli = aliquoLocalCache.find(x => asStr(x.Codigo).toUpperCase() === cod.toUpperCase());
+
+    const fullName = asStr(c.Nombre) || asStr(c.SobreNombre);
+    const parts = fullName.split(/\s+/).filter(Boolean);
     const nombre = parts[0] || '';
     const apellidos = parts.slice(1).join(' ');
-    const dir = [c.Direccion, c.CodigoPostal, c.Poblacion, c.Provincia].filter(Boolean).join(', ');
+    const dir = [asStr(c.Direccion), asStr(c.CodigoPostal), asStr(c.Poblacion), asStr(c.Provincia)].filter(Boolean).join(', ');
     const key = cod || fullName.toUpperCase();
     mapByKey.set(key, {
       codigoCliente: va || cod || 'CLIENTE',
@@ -419,21 +812,27 @@ async function searchClientsAliquoAndSat(q) {
       nombreCliente: nombre,
       apellidosCliente: apellidos,
       direccionCompleta: dir,
-      poblacion: String(c.Poblacion || 'VALLADOLID').trim(),
-      telefono1: String(c.Telefono || '').trim(),
-      telefono2: String(c.Telefono2 || '').trim(),
-      email: String(c.Email || '').trim(),
-      tipoAparato: '',
-      marca: '',
-      modelo: '',
+      poblacion: asStr(c.Poblacion) || 'VALLADOLID',
+      telefono1: asStr(c.Telefono),
+      telefono2: asStr(c.Telefono2),
+      email: asStr(c.Email),
+      tipoAparato: parsedSat.tipoAparato || (cachedCli && cachedCli.tipoAparato) || 'PELLET AIRE',
+      marca: parsedSat.marca || (cachedCli && cachedCli.marca) || '',
+      modelo: parsedSat.modelo || (cachedCli && cachedCli.modelo) || '',
+      marcaModelo: parsedSat.marcaModelo || (cachedCli && cachedCli.marcaModelo) || '',
+      fechaContrato: parsedSat.fechaContrato || (cachedCli && cachedCli.fechaContrato) || '',
+      numContrato: parsedSat.numContrato || (cachedCli && cachedCli.numContrato) || '',
+      numSerie: parsedSat.numSerie || (cachedCli && cachedCli.numSerie) || '',
+      instalacionBaza: parsedSat.instalacionBaza || (cachedCli && cachedCli.instalacionBaza) || '',
+      observacionesAliquo: obs || (cachedCli && cachedCli.Observaciones) || '',
       contratoMant: false,
-      relacion: 'INSTALADO',
+      relacion: parsedSat.relacion || (cachedCli && cachedCli.relacion) || 'INSTALADO',
       tratoCliente: 'BUENO',
       origen: 'ALIQUO SQL LIVE'
     });
   }
 
-  // 2. Enriquecer y buscar también en el histórico de 2.027 AVISOS y 322 CONTRATOS CM (para traer su Marca, Modelo, Tipo de Aparato y Contrato CM)
+  // 2. Enriquecer y buscar también en el histórico de AVISOS y CONTRATOS CM
   const lower = cleanTerm.toLowerCase();
   for (const a of db.avisos) {
     const match =
@@ -454,6 +853,10 @@ async function searchClientsAliquoAndSat(q) {
         if (!existing.tipoAparato && a.tipoAparato) existing.tipoAparato = a.tipoAparato;
         if (!existing.marca && a.marca) existing.marca = a.marca;
         if (!existing.modelo && a.modelo) existing.modelo = a.modelo;
+        if (!existing.fechaContrato && a.fechaInstalacion) existing.fechaContrato = a.fechaInstalacion;
+        if (!existing.numContrato && a.docCompra) existing.numContrato = a.docCompra;
+        if (!existing.numSerie && a.numSerie) existing.numSerie = a.numSerie;
+        if (!existing.observacionesAliquo && a.observacionesAliquo) existing.observacionesAliquo = a.observacionesAliquo;
         if (a.contratoMant) existing.contratoMant = true;
         if (a.tratoCliente) existing.tratoCliente = a.tratoCliente;
       } else if (mapByKey.size < 25) {
@@ -471,6 +874,12 @@ async function searchClientsAliquoAndSat(q) {
           tipoAparato: a.tipoAparato || 'PELLET AIRE',
           marca: a.marca || '',
           modelo: a.modelo || '',
+          marcaModelo: `${a.marca || ''} ${a.modelo || ''}`.trim(),
+          fechaContrato: a.fechaInstalacion || '',
+          numContrato: a.docCompra || '',
+          numSerie: a.numSerie || '',
+          instalacionBaza: a.instalacionBaza || '',
+          observacionesAliquo: a.observacionesAliquo || '',
           contratoMant: Boolean(a.contratoMant),
           relacion: a.relacion || 'INSTALADO',
           tratoCliente: a.tratoCliente || 'BUENO',
@@ -489,15 +898,18 @@ async function searchClientsAliquoAndSat(q) {
       const dir = String(c.Direccion || '').trim();
       const pob = String(c.Poblacion || '').trim();
       const tel = String(c.Telefono || '').trim();
+      const obs = String(c.Observaciones || '').trim();
       if (
         cod.toLowerCase().includes(lower) ||
         nom.toLowerCase().includes(lower) ||
         dir.toLowerCase().includes(lower) ||
+        obs.toLowerCase().includes(lower) ||
         (cleanDigits.length >= 3 && tel.includes(cleanDigits))
       ) {
         const key = cod || nom.toUpperCase();
         if (!mapByKey.has(key)) {
           const parts = nom.split(/\s+/);
+          const parsedSat = c.marcaModelo !== undefined ? c : parseSat20FromObservaciones(obs);
           mapByKey.set(key, {
             codigoCliente: cod || 'CLIENTE',
             codigoAliquo: cod,
@@ -509,11 +921,17 @@ async function searchClientsAliquoAndSat(q) {
             telefono1: tel,
             telefono2: String(c.Telefono2 || '').trim(),
             email: String(c.Email || '').trim(),
-            tipoAparato: 'PELLET AIRE',
-            marca: '',
-            modelo: '',
+            tipoAparato: c.tipoAparato || parsedSat.tipoAparato || 'PELLET AIRE',
+            marca: c.marca || parsedSat.marca || '',
+            modelo: c.modelo || parsedSat.modelo || '',
+            marcaModelo: c.marcaModelo || parsedSat.marcaModelo || '',
+            fechaContrato: c.fechaContrato || parsedSat.fechaContrato || '',
+            numContrato: c.numContrato || parsedSat.numContrato || '',
+            numSerie: c.numSerie || parsedSat.numSerie || '',
+            instalacionBaza: c.instalacionBaza || parsedSat.instalacionBaza || '',
+            observacionesAliquo: obs,
             contratoMant: false,
-            relacion: 'INSTALADO',
+            relacion: c.relacion || parsedSat.relacion || 'INSTALADO',
             tratoCliente: 'BUENO',
             origen: 'CACHE ALIQUO SQL'
           });
@@ -732,6 +1150,103 @@ const server = http.createServer(async (req, res) => {
   const pathname = decodeURI(parsedUrl.pathname);
 
   try {
+    // 0. HEALTHCHECK DOCKER / EASYPANEL (Público)
+    if (pathname === '/api/health' && req.method === 'GET') {
+      const healthy = Array.isArray(db.avisos) && fs.existsSync(DB_FILE);
+      return sendJson(res, healthy ? 200 : 503, {
+        ok: healthy,
+        status: healthy ? 'healthy' : 'degraded',
+        timestamp: nowMadridStr(),
+        aliquoCacheCount: Array.isArray(aliquoLocalCache) ? aliquoLocalCache.length : 0,
+        counts: {
+          avisos: (db.avisos || []).length,
+          citas: (db.citas || []).length,
+          fichajes: (db.fichajes || []).length,
+          contratosCm: (db.contratosCm || []).length
+        }
+      });
+    }
+
+    // 0.1 AUTENTICACIÓN POR PIN (Público)
+    if (pathname === '/api/auth/login' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const pin = String(body.pin || '').trim();
+      const user = PIN_USERS.find(u => u.pin === pin);
+      if (!user) {
+        return sendJson(res, 401, { ok: false, error: 'PIN incorrecto. Verifica tus 4-6 dígitos.' });
+      }
+      const token = signAuthToken(user);
+      const safeUser = {
+        id: user.id,
+        nombre: user.nombre,
+        roles: user.roles,
+        defaultRole: user.defaultRole,
+        canSeeAdmin: user.canSeeAdmin,
+        canSeeNotasAdmin: user.canSeeNotasAdmin,
+        lockedTechEmail: user.lockedTechEmail
+      };
+      return sendJson(res, 200, { ok: true, token, user: safeUser });
+    }
+
+    const authUser = extractRequestUser(req, parsedUrl);
+
+    if (pathname === '/api/auth/me' && req.method === 'GET') {
+      if (!authUser) return sendJson(res, 401, { ok: false, error: 'Sesión no iniciada o caducada.' });
+      return sendJson(res, 200, { ok: true, user: authUser });
+    }
+
+    // Servir archivos multimedia guardados en /app/data/media/ (protegidos con token o sesión)
+    if (pathname.startsWith('/media/') && req.method === 'GET') {
+      if (!authUser) {
+        res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Acceso restringido: inicia sesión con PIN.');
+      }
+      const relMedia = pathname.replace(/^\/media\//, '');
+      const mediaPath = path.resolve(MEDIA_DIR, relMedia);
+      if (!mediaPath.startsWith(path.resolve(MEDIA_DIR)) || !fs.existsSync(mediaPath) || !fs.statSync(mediaPath).isFile()) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Archivo multimedia no encontrado');
+      }
+      const ext = path.extname(mediaPath).toLowerCase();
+      res.writeHead(200, {
+        'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+        'Cache-Control': 'private, max-age=86400'
+      });
+      return fs.createReadStream(mediaPath).pipe(res);
+    }
+
+    // Guardián de sesión para toda la API (/api/*)
+    if (pathname.startsWith('/api/')) {
+      if (!authUser) {
+        return sendJson(res, 401, { ok: false, code: 'AUTH_REQUIRED', error: 'Introduce tu PIN personal para acceder.' });
+      }
+      const isAdminRoute =
+        pathname.startsWith('/api/admin/') ||
+        pathname.startsWith('/api/contratos-cm/') ||
+        pathname === '/api/contratos-cm' ||
+        pathname === '/api/tarifas' ||
+        pathname === '/api/repuestos' ||
+        pathname === '/api/marcas' ||
+        pathname === '/api/vehiculos' ||
+        pathname === '/api/aliquo/volcar-albaran';
+      if (isAdminRoute && !authUser.canSeeAdmin) {
+        return sendJson(res, 403, { ok: false, code: 'FORBIDDEN_ADMIN', error: 'Acceso restringido a Dirección / Administración (Silvia, Chus, Leandro).' });
+      }
+    }
+
+    // Backup completo de base de datos bajo demanda (Admin)
+    if (pathname === '/api/admin/backup' && req.method === 'GET') {
+      saveDb(true);
+      const stamp = nowMadridStr().slice(0, 10);
+      const payload = fs.existsSync(DB_FILE) ? fs.readFileSync(DB_FILE) : Buffer.from(JSON.stringify(db, null, 2));
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="sat_db_backup_${stamp}.json"`,
+        'Content-Length': payload.length
+      });
+      return res.end(payload);
+    }
+
     // 1. BOOTSTRAP GENERAL (KPIs, Operarios, Marcas, Repuestos, Tarifas, Vehículos)
     if (pathname === '/api/bootstrap' && req.method === 'GET') {
       const countsByState = {};
@@ -781,7 +1296,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 2. BÚSQUEDA EN VIVO DE CLIENTES EN ALIQUO SQL + HISTÓRICO SAT
-    if (pathname === '/api/aliquo/buscar-cliente' && req.method === 'GET') {
+    if ((pathname === '/api/sat/buscar-cliente' || pathname === '/api/aliquo/buscar-cliente') && req.method === 'GET') {
       const q = parsedUrl.searchParams.get('q') || '';
       const result = await searchClientsAliquoAndSat(q);
       return sendJson(res, 200, { ok: true, query: q, ...result });
@@ -875,16 +1390,16 @@ const server = http.createServer(async (req, res) => {
     // 4. CREAR NUEVO AVISO (Alta Express 15s con numerador atómico MAX + 1)
     if (pathname === '/api/avisos' && req.method === 'POST') {
       const body = await readJsonBody(req);
-      const maxNumero = db.avisos.reduce((max, a) => (a.numero > max && a.numero < 90000 ? a.numero : max), 2710);
-      const nuevoNumero = maxNumero + 1;
+      const nuevoNumero = getNextAvisoNumero();
       const idAviso = crypto.randomBytes(4).toString('hex');
       const dir = String(body.direccionCompleta || '').trim();
       const geo = inferGeo(dir, nuevoNumero);
 
-      // PASO 2: ALTA AUTOMÁTICA EN ALIQUO SI EL CLIENTE NO EXISTE
+      // PRE-ALTA LOCAL SOLO SI EL CLIENTE NO EXISTE EN ALIQUO (Nunca sobrescribir códigos existentes)
       let codCli = String(body.codigoCliente || '').trim();
+      const esClienteNuevo = !codCli || codCli.toUpperCase() === 'NO ES CLIENTE';
       let clienteCreadoAliquo = null;
-      const debeCrearEnAliquo = body.crearClienteEnAliquo || codCli === 'NO ES CLIENTE' || !codCli;
+      const debeCrearEnAliquo = esClienteNuevo && body.crearClienteEnAliquo !== false;
 
       if (debeCrearEnAliquo && body.nombreCliente) {
         const nuevoCodigo = generarCodigoClienteAliquo();
@@ -899,7 +1414,7 @@ const server = http.createServer(async (req, res) => {
           Telefono: String(body.telefono1 || '').trim(),
           Email: String(body.email || '').trim().toLowerCase(),
           FechaAlta: new Date().toISOString(),
-          Origen: 'ALTA DIRECTA SAT BAZA 2.0'
+          Origen: 'PRE-ALTA SAT BAZA 2.0 (PDTE SYNC ALIQUO)'
         };
 
         codCli = nuevoCodigo;
@@ -911,9 +1426,9 @@ const server = http.createServer(async (req, res) => {
       const nuevoAviso = {
         idAviso,
         numero: nuevoNumero,
-        fecha: new Date().toISOString().slice(0, 16).replace('T', ' '),
+        fecha: nowMadridStr(),
         anota: String(body.anota || 'JACOBO').toUpperCase(),
-        clienteExistente: true,
+        clienteExistente: !esClienteNuevo,
         codigoCliente: codCli || 'CLIENTE',
         dni: String(body.dni || '').trim().toUpperCase(),
         email: String(body.email || '').trim().toLowerCase(),
@@ -929,7 +1444,11 @@ const server = http.createServer(async (req, res) => {
         tipoAparato: String(body.tipoAparato || 'PELLET AIRE').trim(),
         marca: String(body.marca || '').trim().toUpperCase(),
         modelo: String(body.modelo || '').trim().toUpperCase(),
-        fechaInstalacion: String(body.fechaInstalacion || '').trim(),
+        fechaInstalacion: String(body.fechaInstalacion || body.fechaContrato || '').trim(),
+        docCompra: String(body.docCompra || body.numContrato || '').trim(),
+        numSerie: String(body.numSerie || '').trim(),
+        instalacionBaza: String(body.instalacionBaza || '').trim(),
+        observacionesAliquo: String(body.observacionesAliquo || '').trim(),
         relacion: String(body.relacion || 'INSTALADO').trim(),
         contratoMant: Boolean(body.contratoMant),
         observaciones: String(body.observaciones || '').trim(),
@@ -959,7 +1478,8 @@ const server = http.createServer(async (req, res) => {
         'estadoAviso', 'prioridad', 'tratoCliente', 'operarioPreasignado',
         'tipoIntervencion', 'observaciones', 'horariosDisponibles', 'marca',
         'modelo', 'tipoAparato', 'contratoMant', 'codigoCliente', 'telefono1',
-        'direccionCompleta', 'sumaImportes', 'notasFichajes', 'kmIdaVuelta'
+        'direccionCompleta', 'sumaImportes', 'notasFichajes', 'kmIdaVuelta',
+        'fechaInstalacion', 'docCompra', 'numSerie', 'relacion', 'instalacionBaza', 'observacionesAliquo'
       ];
       for (const k of allowed) {
         if (body[k] !== undefined) aviso[k] = body[k];
@@ -1068,8 +1588,8 @@ const server = http.createServer(async (req, res) => {
         idAviso: av ? av.idAviso : (body.idAviso || ''),
         avisoNumero: av ? av.numero : (Number(body.avisoNumero) || 0),
         titulo: tituloAuto,
-        inicio: String(body.inicio || new Date().toISOString().slice(0, 16).replace('T', ' ')),
-        fin: String(body.fin || new Date(Date.now() + 3600000).toISOString().slice(0, 16).replace('T', ' ')),
+        inicio: String(body.inicio || nowMadridStr()),
+        fin: String(body.fin || nowMadridStr(Date.now() + 3600000)),
         creadoPor: String(body.creadoPor || 'JACOBO'),
         direccion: av ? av.direccionCompleta : String(body.direccion || ''),
         asistentes: asistentesArr.join(', '),
@@ -1157,7 +1677,7 @@ const server = http.createServer(async (req, res) => {
         direccion: av ? av.direccionCompleta : String(body.direccion || ''),
         operario: operarioEmail,
         companeroApoyo: String(body.companeroApoyo || ''),
-        inicio: new Date().toISOString().slice(0, 16).replace('T', ' '),
+        inicio: nowMadridStr(),
         inicioTimestampMs: Date.now(),
         fin: '',
         ubicacionInicio: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
@@ -1191,7 +1711,7 @@ const server = http.createServer(async (req, res) => {
       );
 
       const nowMs = body.ajustarSalida3MinAntes ? (Date.now() - 3 * 60 * 1000) : Date.now();
-      const finStr = new Date(nowMs).toISOString().slice(0, 16).replace('T', ' ');
+      const finStr = nowMadridStr(nowMs);
       const minutos = Math.max(15, Number(body.minutosTrabajados) || 45);
       const horas = Math.floor(minutos / 60);
       const minsRest = minutos % 60;
@@ -1204,7 +1724,7 @@ const server = http.createServer(async (req, res) => {
           avisoNumero: av ? av.numero : Number(body.avisoNumero || 0),
           operario: String(body.operario || 'jacobo.bazamazano@gmail.com'),
           companeroApoyo: String(body.companeroApoyo || ''),
-          inicio: new Date(nowMs - minutos * 60000).toISOString().slice(0, 16).replace('T', ' '),
+          inicio: nowMadridStr(nowMs - minutos * 60000),
           ubicacionInicio: av ? `${av.lat}, ${av.lng}` : `${HQ_COORDS.lat}, ${HQ_COORDS.lng}`,
           latInicio: av ? av.lat : HQ_COORDS.lat,
           lngInicio: av ? av.lng : HQ_COORDS.lng
@@ -1221,11 +1741,12 @@ const server = http.createServer(async (req, res) => {
       fichaje.notas = String(body.notas || '').trim();
       fichaje.tratoCliente = String(body.tratoCliente || 'BUENO');
       fichaje.estadoFichaje = 'TERMINADO';
-      fichaje.firma = String(body.firma || '');
-      fichaje.fotoAdjuntar = String(body.fotoAdjuntar || '');
+      fichaje.firma = persistMediaDataUrl(body.firma || '', 'fichajes', `${fichaje.idFichaje}_firma`);
+      fichaje.fotoAdjuntar = persistMediaDataUrl(body.fotoAdjuntar || '', 'fichajes', `${fichaje.idFichaje}_foto`);
       fichaje.repuestosUsados = Array.isArray(body.repuestosUsados) ? body.repuestosUsados : [];
       fichaje.desgloseTarifa = body.desgloseTarifa || null;
       fichaje.kmCalculados = Number(body.kmIdaVuelta) || (av ? av.kmIdaVuelta : 14);
+      if (av && body.tipoIntervencion) av.tipoIntervencion = String(body.tipoIntervencion).trim();
 
       // ROLLUP AUTOMÁTICO EN AVISOS (Idéntico a AppSheet pero con desglose limpio para Silvia y Lidia)
       let albaranGenerado = null;
@@ -1251,7 +1772,7 @@ const server = http.createServer(async (req, res) => {
 
         // SEGURIDAD MÁXIMA: Si el cliente está disconforme, bloquear SIEMPRE el volcado automático a Aliquo
         if (esDisconforme) {
-          av.estadoAviso = 'PASADO ALIQUIO Y PENDIENTE REVISAR JACOBO';
+          av.estadoAviso = 'PASADO ALIQUO Y PENDIENTE REVISAR JACOBO';
           av.alertaDisconforme = true;
           av.motivoDisconformidad = fichaje.notas || 'Cliente disconforme con la intervención o importe';
         } else if (estadoDeseado === 'PASADO ALIQUO' || body.autoVolcarAliquo) {
@@ -1289,7 +1810,25 @@ const server = http.createServer(async (req, res) => {
 
     // PASO 3: GENERADOR DE REMESAS BANCARIAS SEPA XML (NORMA 19 / PAIN.008.001.02)
     if (pathname === '/api/contratos-cm/descargar-remesa-sepa' && req.method === 'GET') {
-      const list = db.contratosCm || [];
+      const list = (db.contratosCm || []).filter(c => !c.pasadoAAvisos && !c.remesadoBanco);
+      const validIbanRe = /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/;
+      const invalidContracts = [];
+      for (const c of list) {
+        const cleanIban = String(c.iban || '').replace(/\s+/g, '').toUpperCase();
+        if (!cleanIban || !validIbanRe.test(cleanIban) || cleanIban === 'ES8200755814780601353513') {
+          invalidContracts.push(`${c.codigoCliente || c.idContrato} (${(c.nombreCliente || '').trim()} ${(c.apellidosCliente || '').trim()})`.trim());
+        }
+      }
+      if (list.length === 0) {
+        return sendJson(res, 400, { ok: false, error: 'No hay contratos CM pendientes de remesar.' });
+      }
+      if (invalidContracts.length > 0) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: `Remesa bloqueada: ${invalidContracts.length} contrato(s) carecen de IBAN válido del cliente (nunca se usa IBAN por defecto). Revisa: ${invalidContracts.slice(0, 5).join(', ')}`
+        });
+      }
+
       const totalSuma = list.reduce((sum, c) => sum + (Number(c.cuotaAnual2026) || 175), 0);
       const fechaNow = new Date().toISOString().slice(0, 19);
       const fechaCobro = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -1298,10 +1837,11 @@ const server = http.createServer(async (req, res) => {
       let xmlTxs = '';
       list.forEach((c, i) => {
         const cuota = (Number(c.cuotaAnual2026) || 175).toFixed(2);
-        const cliNom = `${c.nombreCliente || ''} ${c.apellidosCliente || ''}`.trim().replace(/&/g, 'Y').slice(0, 65);
-        const iban = c.iban || 'ES8200755814780601353513';
-        const mandato = `MND-${c.codigoCliente || c.idContrato || ('REC' + i)}`;
-        const endToEnd = `CM26-${c.idContrato || i}-${c.codigoCliente || 'CLI'}`;
+        const cliNom = escapeHtmlServer(`${c.nombreCliente || ''} ${c.apellidosCliente || ''}`.trim().replace(/&/g, 'Y').slice(0, 65));
+        const iban = escapeHtmlServer(String(c.iban || '').replace(/\s+/g, '').toUpperCase());
+        const mandato = escapeHtmlServer(`MND-${c.codigoCliente || c.idContrato || ('REC' + i)}`);
+        const endToEnd = escapeHtmlServer(`CM26-${c.idContrato || i}-${c.codigoCliente || 'CLI'}`);
+        const refContrato = escapeHtmlServer(c.idContrato || '');
 
         xmlTxs += `
       <DrctDbtTxInf>
@@ -1331,7 +1871,7 @@ const server = http.createServer(async (req, res) => {
           </Id>
         </DbtrAcct>
         <RmtInf>
-          <Ustrd>RENOVACION CUOTA ANUAL MANTENIMIENTO 2026 BAZA MAZANO - ${c.idContrato}</Ustrd>
+          <Ustrd>RENOVACION CUOTA ANUAL MANTENIMIENTO 2026 BAZA MAZANO - ${refContrato}</Ustrd>
         </RmtInf>
       </DrctDbtTxInf>`;
       });
@@ -1406,17 +1946,15 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/contratos-cm/confirmar-remesa' && req.method === 'POST') {
       const creados = [];
       const pendientes = db.contratosCm.filter(c => !c.pasadoAAvisos);
-      let currentMax = db.avisos.reduce((max, a) => (a.numero > max && a.numero < 90000 ? a.numero : max), 27100);
 
       for (const cm of pendientes) {
-        currentMax++;
-        const nuevoNumero = currentMax;
+        const nuevoNumero = getNextAvisoNumero();
         const geo = inferGeo(cm.direccionCompleta, nuevoNumero);
 
         const nuevoAviso = {
           idAviso: crypto.randomBytes(4).toString('hex'),
           numero: nuevoNumero,
-          fecha: new Date().toISOString().slice(0, 16).replace('T', ' '),
+          fecha: nowMadridStr(),
           anota: 'REMESA SEPA BANCARIA',
           clienteExistente: true,
           codigoCliente: cm.codigoCliente || 'CLIENTE CM',
@@ -1462,20 +2000,18 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const ids = Array.isArray(body.ids) ? body.ids : (body.idContrato ? [body.idContrato] : []);
       const creados = [];
-      let currentMax = db.avisos.reduce((max, a) => (a.numero > max && a.numero < 90000 ? a.numero : max), 27100);
 
       for (const id of ids) {
         const cm = db.contratosCm.find(c => c.idContrato === id);
         if (!cm || cm.pasadoAAvisos) continue;
 
-        currentMax++;
-        const nuevoNumero = currentMax;
+        const nuevoNumero = getNextAvisoNumero();
         const geo = inferGeo(cm.direccionCompleta, nuevoNumero);
 
         const nuevoAviso = {
           idAviso: crypto.randomBytes(4).toString('hex'),
           numero: nuevoNumero,
-          fecha: new Date().toISOString().slice(0, 16).replace('T', ' '),
+          fecha: nowMadridStr(),
           anota: String(body.anota || 'SILVIA'),
           clienteExistente: true,
           codigoCliente: cm.codigoCliente || 'CLIENTE CM',
@@ -1579,7 +2115,13 @@ const server = http.createServer(async (req, res) => {
     // 13. GENERADOR DE PARTE DE TRABAJO OFICIAL EN PDF / HTML IMPRIMIBLE
     if (pathname.startsWith('/api/parte-pdf/') && req.method === 'GET') {
       const id = pathname.split('/')[3];
-      const fichaje = db.fichajes.find(f => f.idFichaje === id || String(f.avisoNumero) === id);
+      const matchingFichajes = db.fichajes.filter(
+        f => f.idFichaje === id || f.idAviso === id || String(f.avisoNumero) === id
+      );
+      const fichaje =
+        matchingFichajes.find(f => f.estadoFichaje === 'TERMINADO') ||
+        matchingFichajes[0] ||
+        null;
       const av = db.avisos.find(a =>
         (fichaje && a.idAviso === fichaje.idAviso) ||
         a.idAviso === id ||
@@ -1591,20 +2133,36 @@ const server = http.createServer(async (req, res) => {
         return res.end('Parte de trabajo no encontrado');
       }
 
-      const num = av ? av.numero : (fichaje ? fichaje.avisoNumero : 'S/N');
-      const cliente = av ? `${av.nombreCliente} ${av.apellidosCliente}`.trim() : (fichaje ? fichaje.clienteNombre : '');
-      const codCli = av ? av.codigoCliente : '';
-      const dir = av ? av.direccionCompleta : (fichaje ? fichaje.direccion : '');
-      const tel = av ? av.telefono1 : '';
-      const aparato = av ? `${av.tipoAparato} · ${av.marca} ${av.modelo}` : '';
-      const fecha = fichaje ? (fichaje.fin || fichaje.inicio) : (av ? av.fecha : '');
-      const notas = fichaje ? fichaje.notas : (av ? (av.notasFichajes || av.observaciones) : '');
+      const rawToken =
+        parsedUrl.searchParams.get('token') ||
+        (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      const appendMediaToken = (src) => {
+        if (!src || !rawToken || !String(src).startsWith('/media/')) return src;
+        return `${src}?token=${encodeURIComponent(rawToken)}`;
+      };
+      const isDisplayableImg = (src) =>
+        src && (String(src).startsWith('data:image') || String(src).startsWith('/media/'));
+
+      const esc = escapeHtmlServer;
+      const num = esc(av ? av.numero : (fichaje ? fichaje.avisoNumero : 'S/N'));
+      const cliente = esc(av ? `${av.nombreCliente || ''} ${av.apellidosCliente || ''}`.trim() : (fichaje ? (fichaje.clienteNombre || '') : ''));
+      const codCli = esc(av ? (av.codigoCliente || '') : '');
+      const dir = esc(av ? (av.direccionCompleta || '') : (fichaje ? (fichaje.direccion || '') : ''));
+      const tel = esc(av ? (av.telefono1 || '') : '');
+      const aparato = esc(av ? `${av.tipoAparato || ''} · ${av.marca || ''} ${av.modelo || ''}` : '');
+      const fecha = esc(fichaje ? (fichaje.fin || fichaje.inicio || '') : (av ? (av.fecha || '') : ''));
+      const notas = esc(fichaje ? (fichaje.notas || '') : (av ? (av.notasFichajes || av.observaciones || '') : ''));
       const importe = fichaje ? Number(fichaje.importe || 0) : (av ? Number(av.sumaImportes || 0) : 0);
-      const metodoPago = fichaje ? (fichaje.metodoPago || 'PENDIENTE') : 'SEGÚN TARIFA';
+      const metodoPago = esc(fichaje ? (fichaje.metodoPago || 'PENDIENTE') : 'SEGÚN TARIFA');
       const repuestos = (fichaje && Array.isArray(fichaje.repuestosUsados)) ? fichaje.repuestosUsados : [];
-      const firmaImg = (fichaje && fichaje.firma && fichaje.firma.startsWith('data:image'))
-        ? `<img src="${fichaje.firma}" style="max-height:95px;border-bottom:1px solid #1e293b;" />`
-        : `<div style="height:75px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:12px;border-bottom:1px dashed #94a3b8;">Conformidad registrada digitalmente (${fichaje && fichaje.firma ? fichaje.firma : 'SAT Baza Mazano'})</div>`;
+      const firmaSrc = fichaje ? fichaje.firma : '';
+      const firmaImg = isDisplayableImg(firmaSrc)
+        ? `<img src="${esc(appendMediaToken(firmaSrc))}" style="max-height:95px;border-bottom:1px solid #1e293b;" />`
+        : `<div style="height:75px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:12px;border-bottom:1px dashed #94a3b8;">Conformidad registrada digitalmente (${esc(firmaSrc || 'SAT Baza Mazano')})</div>`;
+      const fotoSrc = fichaje ? fichaje.fotoAdjuntar : '';
+      const fotoHtml = isDisplayableImg(fotoSrc)
+        ? `<div class="box" style="margin-bottom: 16px;"><h3>Evidencia Fotográfica del Equipo / Placa</h3><img src="${esc(appendMediaToken(fotoSrc))}" style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid #cbd5e1;" /></div>`
+        : '';
 
       const html = `<!DOCTYPE html>
 <html lang="es">
@@ -1661,8 +2219,8 @@ const server = http.createServer(async (req, res) => {
       <div class="box">
         <h3>Equipo e Intervención</h3>
         <p><strong>Aparato / Marca / Modelo:</strong> ${aparato}</p>
-        <p><strong>Tipo Intervención:</strong> ${av ? av.tipoIntervencion : 'SAT'} ${av && av.contratoMant ? '· [CON CONTRATO MANTENIMIENTO]' : ''}</p>
-        <p><strong>Fecha / Hora Cierre:</strong> ${fecha} · <strong>Duración:</strong> ${fichaje ? fichaje.duracion : '00:45:00'}</p>
+        <p><strong>Tipo Intervención:</strong> ${esc(av ? av.tipoIntervencion : 'SAT')} ${av && av.contratoMant ? '· [CON CONTRATO MANTENIMIENTO]' : ''}</p>
+        <p><strong>Fecha / Hora Cierre:</strong> ${fecha} · <strong>Duración:</strong> ${esc(fichaje ? fichaje.duracion : '00:45:00')}</p>
       </div>
     </div>
 
@@ -1670,6 +2228,8 @@ const server = http.createServer(async (req, res) => {
       <h3>Trabajos Realizados y Diagnóstico Técnico</h3>
       <p style="white-space: pre-wrap; line-height: 1.5;">${notas || 'Se realiza intervención técnica y comprobación de funcionamiento según protocolo oficial.'}</p>
     </div>
+
+    ${fotoHtml}
 
     ${repuestos.length > 0 ? `
     <table>
@@ -1679,9 +2239,9 @@ const server = http.createServer(async (req, res) => {
       <tbody>
         ${repuestos.map(r => `
           <tr>
-            <td><strong>${r.codigo}</strong></td>
-            <td>${r.descripcion}</td>
-            <td>${r.cantidad || 1}</td>
+            <td><strong>${esc(r.codigo)}</strong></td>
+            <td>${esc(r.descripcion)}</td>
+            <td>${Number(r.cantidad || 1)}</td>
             <td>${Number(r.pvpUnitario || r.pvp || 0).toFixed(2)} €</td>
             <td><strong>${Number((r.cantidad || 1) * (r.pvpUnitario || r.pvp || 0)).toFixed(2)} €</strong></td>
           </tr>
@@ -1693,7 +2253,7 @@ const server = http.createServer(async (req, res) => {
     <div class="total-bar">
       <div>
         <div style="font-size:12px;color:#9a3412;font-weight:700;text-transform:uppercase;">Método de Pago: ${metodoPago}</div>
-        <div style="font-size:11px;color:#64748b;">Kilometraje calculado desde base C/ Annapurna 22 (${fichaje ? fichaje.kmCalculados : (av ? av.kmIdaVuelta : 14)} km I/V · Franquicia 30 km incluidos en salida)</div>
+        <div style="font-size:11px;color:#64748b;">Kilometraje calculado desde base C/ Annapurna 22 (${Number(fichaje ? fichaje.kmCalculados : (av ? av.kmIdaVuelta : 14))} km I/V · Franquicia 30 km incluidos en salida)</div>
       </div>
       <div>
         <span style="font-size:12px;color:#7c2d12;margin-right:8px;">IMPORTE TOTAL (IVA Incl.):</span>
@@ -1704,7 +2264,7 @@ const server = http.createServer(async (req, res) => {
     <div class="signatures">
       <div>
         <div style="height:75px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #1e293b;font-weight:700;color:#0f172a;">
-          Técnico SAT: ${fichaje ? fichaje.operario : (av ? av.operarioPreasignado : 'Baza Mazano')}
+          Técnico SAT: ${esc(fichaje ? fichaje.operario : (av ? av.operarioPreasignado : 'Baza Mazano'))}
         </div>
         <p>Por BAZA MAZANO S.L.</p>
       </div>
@@ -1758,6 +2318,19 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\n🚀 SAT BAZA MAZANO 2.0 (2026/2027) escuchando en http://localhost:${PORT}`);
   console.log(`   - Consola de Mando SAT (Jacobo y Leandro)`);
-  console.log(`   - App Móvil Técnicos con Geocerca >1 km (Alex, Jacobo, Dioni, Roberto)`);
-  console.log(`   - Panel Administración, Flota y Contratos CM (Silvia y Lidia)\n`);
+  console.log(`   - App Móvil Técnicos con Geocerca >1 km (Alex, Jacobo, Dioni, Roberto, Ismael)`);
+  console.log(`   - Panel Administración, Flota y Contratos CM (Silvia y Chus)`);
+  console.log(`   - Directorio persistente: ${DATA_DIR}\n`);
 });
+
+function gracefulShutdown(signal) {
+  console.log(`\n🛑 Señal ${signal} recibida: volcando base de datos a disco antes de cerrar...`);
+  try {
+    saveDb(true);
+  } catch (err) {
+    console.error('Error al volcar DB en cierre:', err);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

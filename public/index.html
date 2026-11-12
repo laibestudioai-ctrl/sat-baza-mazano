@@ -6,7 +6,7 @@
   <title>SAT Baza Mazano 2.0 (2026/2027) — Sistema Operativo SAT & Aliquo SQL</title>
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/styles.css?v=20261105d" />
+  <link rel="stylesheet" href="/styles.css?v=20261112a" />
   <script>
     (function() {
       try {
@@ -23,6 +23,38 @@
 </head>
 <body>
 
+  <!-- OVERLAY DE ACCESO POR PIN PERSONAL (FASE 1 SEGURIDAD) -->
+  <div id="pinAuthOverlay" class="pin-auth-overlay" style="display:flex;">
+    <div class="pin-auth-card">
+      <img src="/logo_bazamazano_oficial.png" alt="Baza Mazano Oficial" style="height:52px;max-width:180px;object-fit:contain;background:#ffffff;padding:6px 12px;border-radius:10px;margin:0 auto 14px;display:block;box-shadow:0 4px 12px rgba(0,0,0,0.2);" />
+      <h2 style="margin:0 0 6px;font-size:20px;">Acceso SAT Baza Mazano 2.0</h2>
+      <p style="margin:0 0 18px;font-size:13px;color:var(--text-muted);">
+        Introduce tu <strong>PIN personal</strong> (4-6 dígitos) para entrar según tus permisos de empresa.
+      </p>
+      <form onsubmit="submitPinLogin(event)" style="display:flex;flex-direction:column;gap:12px;">
+        <input
+          type="password"
+          id="pinAuthInput"
+          inputmode="numeric"
+          pattern="[0-9]{4,6}"
+          maxlength="6"
+          autocomplete="one-time-code"
+          placeholder="••••"
+          style="text-align:center;font-size:26px;letter-spacing:10px;font-weight:900;padding:12px;"
+          required
+        />
+        <div id="pinAuthError" style="display:none;color:#f87171;font-size:12px;font-weight:700;"></div>
+        <button type="submit" id="btnPinSubmit" class="btn btn-primary" style="padding:12px;font-size:15px;">
+          🔓 Entrar al Sistema
+        </button>
+      </form>
+      <div style="margin-top:14px;font-size:11px;color:var(--text-muted);line-height:1.45;">
+        Dirección/Admin · Consola SAT · Técnicos en Ruta<br/>
+        Cada acceso registra su propio rol y ámbito seguro.
+      </div>
+    </div>
+  </div>
+
   <!-- TOPBAR CON SELECTOR DE ROL (3 VISTAS PERSONALIZADAS) -->
   <header class="topbar">
     <div class="brand-block">
@@ -30,25 +62,29 @@
       <div class="brand-title">
         <h1>
           SAT BAZA MAZANO 2.0
-          <span class="badge badge-green" id="aliquoStatusBadge">⚡ ALIQUO SQL CONECTADO</span>
+          <span class="badge badge-green" id="aliquoStatusBadge">📦 CATÁLOGO ALIQUO CARGADO</span>
         </h1>
-        <p>C/ Annapurna 22, Valladolid · 2.027 Avisos · 322 Contratos CM · Tarifas Oficiales 2026 & 2027</p>
+        <p id="headerStatsText">C/ Annapurna 22, Valladolid · Cargando datos SAT · Tarifas Oficiales 2026 & 2027</p>
       </div>
     </div>
 
     <div class="role-switcher" role="tablist">
       <button class="role-btn active" id="btnRoleMando" onclick="switchRole('mando')">
-        🖥️ 1. Consola Mando SAT (Jacobo / Leandro)
+        🖥️ 1. Consola Mando SAT
       </button>
       <button class="role-btn" id="btnRoleTecnico" onclick="switchRole('tecnico')">
-        📱 2. App Móvil Técnicos (Alex / Jacobo / Dioni / Roberto)
+        📱 2. App Móvil Técnicos
       </button>
       <button class="role-btn" id="btnRoleAdmin" onclick="switchRole('admin')">
-        💼 3. Administración, Flota y CM (Silvia / Lidia)
+        💼 3. Administración, Flota y CM
       </button>
     </div>
 
     <div class="topbar-actions">
+      <span id="currentUserBadge" class="user-auth-pill" style="display:none;"></span>
+      <button class="btn btn-ghost" id="btnSwitchUserPin" onclick="logoutPin()" title="Cambiar de usuario / cerrar sesión PIN" style="display:none;font-size:12px;padding:7px 10px;font-weight:700;">
+        🔒 Cambiar
+      </button>
       <button class="btn btn-ghost" id="themeToggleBtn" onclick="toggleTheme()" title="Cambiar Tema Claro / Oscuro" style="font-size:13px;padding:8px 12px;font-weight:700;">
         ☀️ / 🌙
       </button>
@@ -229,6 +265,7 @@
               <option value="jacobo.bazamazano@gmail.com" data-name="JACOBO">🔵 JACOBO (jacobo.bazamazano)</option>
               <option value="dioni.bazamazano@gmail.com" data-name="DIONI">🟠 DIONI (dioni.bazamazano)</option>
               <option value="rober.bazamazano@gmail.com" data-name="ROBERTO">🟣 ROBERTO (rober.bazamazano)</option>
+              <option value="isma.bazamazano@gmail.com" data-name="ISMAEL">🟡 ISMAEL (isma.bazamazano)</option>
             </select>
           </div>
           <div class="field">
@@ -374,6 +411,26 @@
               <input type="text" id="newModelo" placeholder="Modelo de máquina" />
             </div>
             <div class="field">
+              <label>Fecha Contrato / Compra (Aliquo)</label>
+              <input type="text" id="newFechaInstalacion" placeholder="Ej: 19/07/2018" />
+            </div>
+            <div class="field">
+              <label>Nº Contrato / Doc. Compra</label>
+              <input type="text" id="newDocCompra" placeholder="Ej: VA-5254" />
+            </div>
+            <div class="field">
+              <label>Nº Serie / Garantía</label>
+              <input type="text" id="newNumSerie" placeholder="Opcional: S/N de la máquina" />
+            </div>
+            <div class="field">
+              <label>Instalación / Origen (Baza vs Externa)</label>
+              <select id="newRelacion">
+                <option value="INSTALADO">✅ INSTALADA POR BAZA MAZANO</option>
+                <option value="SUMINISTRADO">📦 SUMINISTRO BAZA (SIN INSTALAR / ALMACÉN)</option>
+                <option value="NO ES NUESTRA">⚠️ NO ES DE BAZA (NO INSTALADA POR NOSOTROS)</option>
+              </select>
+            </div>
+            <div class="field">
               <label>Tipo Intervención</label>
               <select id="newTipoIntervencion">
                 <option value="SAT NORMAL">SAT NORMAL</option>
@@ -420,6 +477,11 @@
                 <option value="DIONI">DIONI</option>
                 <option value="ROBERTO">ROBERTO</option>
               </select>
+            </div>
+            <div class="field" id="newObservacionesAliquoWrap" style="grid-column: 1 / -1; display:none;">
+              <label style="color:#38bdf8;">📋 Historial Unificado "Varios" en Aliquo (Extraído automáticamente de la ficha del cliente)</label>
+              <textarea id="newObservacionesAliquo" rows="4" readonly style="background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.3);font-size:11.5px;color:var(--text);"></textarea>
+              <input type="hidden" id="newInstalacionBaza" />
             </div>
             <div class="field" style="grid-column: 1 / -1;">
               <label>Síntoma / Observaciones del Aviso y Horario Disponible</label>
@@ -631,9 +693,9 @@
             <div class="field">
               <label>Pasar Aviso a Estado</label>
               <select id="closeNuevoEstadoAviso">
-                <option value="PASADO ALIQUO">⚡ AUTO-VOLCAR A ALIQUO AHORA (Recomendado)</option>
-                <option value="FINALIZADO, PASAR ALIQUO">🟣 FINALIZADO (Dejar en cola de revisión)</option>
-                <option value="PENDIENTE REVISAR JACOBO">🚨 CLIENTE DISCONFORME / REVISAR JACOBO</option>
+                <option value="PASADO ALIQUO">📦 FINALIZAR Y DEJAR EN COLA ALIQUO (Recomendado)</option>
+                <option value="FINALIZADO, PASAR ALIQUO">🟣 FINALIZADO (Pendiente Revisión Oficina)</option>
+                <option value="PASADO ALIQUO Y PENDIENTE REVISAR JACOBO">🚨 CLIENTE DISCONFORME / REVISAR JACOBO</option>
                 <option value="NUEVA CITA">🔁 NUEVA CITA (Requiere 2ª visita)</option>
                 <option value="PEDIR MATERIAL">📦 PEDIR MATERIAL / REPUESTO</option>
                 <option value="PENDIENTE PRESUPUESTO">💶 PENDIENTE PRESUPUESTO</option>
@@ -641,7 +703,7 @@
             </div>
           </div>
           <div style="font-size:11.5px;color:#34d399;background:rgba(16,185,129,0.1);border:1px solid #10b981;border-radius:6px;padding:6px 10px;margin-bottom:10px;">
-            ⚡ <strong>Modo Automático:</strong> Al seleccionar <em>«Auto-volcar a Aliquo»</em>, se genera el Albarán oficial cerrado con firma y repuestos en Aliquo en segundo plano. Cero clics para la oficina.
+            📦 <strong>Cola de Preparación Aliquo:</strong> El parte queda guardado con firma, foto, horas y repuestos y se prepara en el borrador de Albarán para revisión en oficina (sincronización directa SQL/API en Fase 2).
           </div>
 
           <div class="field">
@@ -710,7 +772,7 @@
         <input type="hidden" id="waCitaId" />
         <input type="hidden" id="waTelefono" />
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
-          Tal y como acordamos, el sistema <strong>nunca envía el WhatsApp a ciegas</strong> al mover el calendario. Revisa el mensaje antes de enviarlo y marcar la cita como confirmada:
+          El sistema <strong>nunca envía el WhatsApp a ciegas</strong> al mover el calendario. Revisa el mensaje, abre WhatsApp para enviarlo y confirma si quieres marcar la cita como avisada:
         </p>
         <div class="field" style="margin-bottom:14px;">
           <label>Mensaje de Confirmación para el Cliente</label>
@@ -718,8 +780,8 @@
         </div>
         <div style="display:flex;justify-content:flex-end;gap:10px;">
           <button class="btn btn-ghost" onclick="closeModal('modalConfirmarWhatsapp')">Cancelar</button>
-          <button class="btn btn-green" onclick="sendAndMarkWhatsappCita()">
-            📲 Enviar por WhatsApp y Marcar "✅ Cliente Avisado"
+          <button type="button" class="btn btn-green" onclick="sendAndMarkWhatsappCita()">
+            📲 Abrir WhatsApp con Mensaje
           </button>
         </div>
       </div>
@@ -727,6 +789,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/app.js?v=20261105d"></script>
+  <script src="/app.js?v=20261112a"></script>
 </body>
 </html>

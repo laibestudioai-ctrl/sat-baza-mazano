@@ -1,5 +1,7 @@
 node_modules
 .git
+.gitignore
 *.tmp
-*.log
-data/latest_appsheet.xlsx
+data/*.xlsx
+data/media
+tmp

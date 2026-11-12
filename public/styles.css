@@ -1217,3 +1217,46 @@ body.light-theme .cita-tech-team {
   color: #fff !important;
   border-color: #a855f7 !important;
 }
+
+/* FASE 1: OVERLAY PIN AUTH Y PILL USUARIO */
+.pin-auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(9, 13, 22, 0.94);
+  backdrop-filter: blur(8px);
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.pin-auth-card {
+  width: 100%;
+  max-width: 390px;
+  background: var(--bg-panel, #111827);
+  border: 1px solid var(--border, #263044);
+  border-radius: 16px;
+  padding: 28px 24px;
+  text-align: center;
+  color: var(--text, #f8fafc);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.user-auth-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  color: #93c5fd;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+body.light-theme .user-auth-pill {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}

@@ -9,12 +9,14 @@ const state = {
   mobileTab: 'citas', // 'citas' | 'semana' | 'radar' | 'pins'
   adminTab: 'aliquo', // 'aliquo' | 'contratos' | 'flota'
   activeTariffYear: '2026',
+  authToken: localStorage.getItem('sat_baza_auth_token') || '',
+  authUser: null,
   bootstrap: null,
   avisos: [],
   selectedAviso: null,
   citas: [],
   allCitas: [],
-  calViewDate: new Date('2026-11-05T08:00:00'),
+  calViewDate: new Date(),
   calCrewFilter: 'TODOS',
   mobileCrewPartners: new Set(),
   activeFichaje: null,
@@ -37,10 +39,182 @@ const ESTADOS_AVISO_14 = [
   'APLAZADO HASTA QUE LLAME EL CLIENTE',
   'FINALIZADO, PASAR ALIQUO',
   'PASADO ALIQUO',
-  'PASADO ALIQUIO Y PENDIENTE REVISAR JACOBO',
+  'PASADO ALIQUO Y PENDIENTE REVISAR JACOBO',
   'FINALIZADO. SIN ALIQUO.',
   'CANCELADO'
 ];
+
+// =========================================================================
+// AUTENTICACIÓN POR PIN (FASE 1) Y HELPER apiFetch
+// =========================================================================
+function withAuthToken(url) {
+  if (!state.authToken) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(state.authToken)}`;
+}
+
+async function apiFetch(url, options = {}) {
+  const headers = Object.assign({}, options.headers || {});
+  if (state.authToken) {
+    headers['Authorization'] = `Bearer ${state.authToken}`;
+  }
+  const res = await fetch(url, Object.assign({}, options, { headers }));
+  if (res.status === 401) {
+    state.authToken = '';
+    state.authUser = null;
+    localStorage.removeItem('sat_baza_auth_token');
+    showPinAuthOverlay('Sesión caducada o PIN requerido. Introduce tu PIN personal.');
+  }
+  return res;
+}
+
+function showPinAuthOverlay(msg = '') {
+  const ov = document.getElementById('pinAuthOverlay');
+  if (ov) ov.style.display = 'flex';
+  const errEl = document.getElementById('pinAuthError');
+  if (errEl) {
+    errEl.textContent = msg || '';
+    errEl.style.display = msg ? 'block' : 'none';
+  }
+  const input = document.getElementById('pinAuthInput');
+  if (input) {
+    input.value = '';
+    setTimeout(() => input.focus(), 80);
+  }
+}
+
+function hidePinAuthOverlay() {
+  const ov = document.getElementById('pinAuthOverlay');
+  if (ov) ov.style.display = 'none';
+  const errEl = document.getElementById('pinAuthError');
+  if (errEl) errEl.style.display = 'none';
+}
+
+function applyAuthUserUi() {
+  const user = state.authUser;
+  const badge = document.getElementById('currentUserBadge');
+  const btnSwitch = document.getElementById('btnSwitchUserPin');
+  const btnMando = document.getElementById('btnRoleMando');
+  const btnTec = document.getElementById('btnRoleTecnico');
+  const btnAdmin = document.getElementById('btnRoleAdmin');
+  const techSelect = document.getElementById('mobileTechSelect');
+
+  if (!user) {
+    if (badge) badge.style.display = 'none';
+    if (btnSwitch) btnSwitch.style.display = 'none';
+    return;
+  }
+
+  if (badge) {
+    badge.textContent = `👤 ${user.nombre}`;
+    badge.style.display = 'inline-flex';
+  }
+  if (btnSwitch) btnSwitch.style.display = 'inline-flex';
+
+  const roles = Array.isArray(user.roles) ? user.roles : ['mando'];
+  if (btnMando) btnMando.style.display = roles.includes('mando') ? '' : 'none';
+  if (btnTec) btnTec.style.display = roles.includes('tecnico') ? '' : 'none';
+  if (btnAdmin) btnAdmin.style.display = (user.canSeeAdmin && roles.includes('admin')) ? '' : 'none';
+
+  if (techSelect) {
+    if (user.lockedTechEmail) {
+      techSelect.value = user.lockedTechEmail;
+      techSelect.disabled = true;
+      techSelect.title = 'Bloqueado a tu usuario por seguridad de fichajes';
+    } else {
+      techSelect.disabled = false;
+      techSelect.title = '';
+    }
+  }
+
+  const targetRole = roles.includes(state.role) && (state.role !== 'admin' || user.canSeeAdmin)
+    ? state.role
+    : (user.defaultRole || roles[0] || 'mando');
+  switchRole(targetRole);
+}
+
+async function initAuthenticatedApp() {
+  await loadBootstrap();
+  await loadAvisosList();
+  await loadCitasList();
+}
+
+async function checkAuthSession() {
+  if (!state.authToken) {
+    showPinAuthOverlay('');
+    return false;
+  }
+  try {
+    const res = await fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${state.authToken}` }
+    });
+    const data = await res.json();
+    if (res.ok && data.ok && data.user) {
+      state.authUser = data.user;
+      hidePinAuthOverlay();
+      applyAuthUserUi();
+      return true;
+    }
+  } catch (e) {}
+  state.authToken = '';
+  localStorage.removeItem('sat_baza_auth_token');
+  showPinAuthOverlay('');
+  return false;
+}
+
+async function submitPinLogin(e) {
+  e.preventDefault();
+  const input = document.getElementById('pinAuthInput');
+  const errEl = document.getElementById('pinAuthError');
+  const btn = document.getElementById('btnPinSubmit');
+  const pin = String(input ? input.value : '').trim();
+
+  if (!pin) return;
+  if (btn) btn.disabled = true;
+  if (errEl) errEl.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      if (errEl) {
+        errEl.textContent = data.error || 'PIN incorrecto';
+        errEl.style.display = 'block';
+      }
+      if (input) {
+        input.value = '';
+        input.focus();
+      }
+      return;
+    }
+
+    state.authToken = data.token;
+    state.authUser = data.user;
+    localStorage.setItem('sat_baza_auth_token', data.token);
+    hidePinAuthOverlay();
+    applyAuthUserUi();
+    await initAuthenticatedApp();
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = 'Error de conexión con el servidor SAT.';
+      errEl.style.display = 'block';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function logoutPin() {
+  state.authToken = '';
+  state.authUser = null;
+  localStorage.removeItem('sat_baza_auth_token');
+  applyAuthUserUi();
+  showPinAuthOverlay('Introduce el PIN del nuevo usuario.');
+}
 
 // =========================================================================
 // INICIALIZACIÓN
@@ -48,21 +222,31 @@ const ESTADOS_AVISO_14 = [
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   initSignaturePad();
-  await loadBootstrap();
-  await loadAvisosList();
-  await loadCitasList();
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  const authenticated = await checkAuthSession();
+  if (authenticated) {
+    await initAuthenticatedApp();
   }
 });
 
 async function loadBootstrap() {
   try {
-    const res = await fetch('/api/bootstrap');
+    const res = await apiFetch('/api/bootstrap');
     const data = await res.json();
     if (!data.ok) return;
     state.bootstrap = data;
+
+    // Actualizar subtítulo superior con cifras reales de BD y catálogo Aliquo
+    const hdrStats = document.getElementById('headerStatsText');
+    if (hdrStats && data.kpis) {
+      const k = data.kpis;
+      const aliqCount = Number(data.aliquoCacheCount || 0).toLocaleString('es-ES');
+      hdrStats.textContent = `C/ Annapurna 22, Valladolid · ${Number(k.totalAvisos || 0).toLocaleString('es-ES')} Avisos · ${k.contratosCmTotal || 0} Contratos CM · ${aliqCount} Clientes Aliquo · Tarifas 2026 & 2027`;
+    }
 
     // Poblar datalist de marcas y selector de repuestos
     const dl = document.getElementById('marcasDatalist');
@@ -89,7 +273,8 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function badgeForEstado(estado) {
@@ -125,6 +310,13 @@ function findBrandInfo(marcaStr) {
 // CAMBIO DE ROL (1. MANDO SAT | 2. APP MÓVIL TÉCNICOS | 3. ADMINISTRACIÓN)
 // =========================================================================
 function switchRole(role) {
+  if (state.authUser) {
+    const allowed = Array.isArray(state.authUser.roles) ? state.authUser.roles : ['mando'];
+    if (!allowed.includes(role) || (role === 'admin' && !state.authUser.canSeeAdmin)) {
+      alert('Acceso no autorizado para tu usuario PIN.');
+      role = state.authUser.defaultRole || allowed[0] || 'mando';
+    }
+  }
   state.role = role;
   document.getElementById('btnRoleMando').classList.toggle('active', role === 'mando');
   document.getElementById('btnRoleTecnico').classList.toggle('active', role === 'tecnico');
@@ -239,7 +431,7 @@ async function loadAvisosList() {
   const q = document.getElementById('searchAvisosInput').value;
 
   const params = new URLSearchParams({ estado, operario, q, limit: '150' });
-  const res = await fetch(`/api/avisos?${params}`);
+  const res = await apiFetch(`/api/avisos?${params}`);
   const data = await res.json();
   if (!data.ok) return;
 
@@ -320,7 +512,7 @@ async function selectAviso(idAviso) {
         <button class="btn btn-green" onclick="openCerrarFichajeModal(null, '${av.idAviso}')">
           🛠️ Registrar / Cerrar Parte
         </button>
-        <a class="btn btn-ghost" href="/api/parte-pdf/${av.idAviso}" target="_blank" style="text-decoration:none;">
+        <a class="btn btn-ghost" href="${withAuthToken(`/api/parte-pdf/${av.idAviso}`)}" target="_blank" style="text-decoration:none;">
           🖨️ Parte PDF
         </a>
       </div>
@@ -394,12 +586,32 @@ async function selectAviso(idAviso) {
         </div>
 
         <div class="box" style="background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:12px;">
-          <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-bottom:6px;">🔥 Máquina e Importe Acumulado</div>
+          <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-bottom:6px;">🔥 Máquina, Contrato e Importe Acumulado</div>
           <p style="font-size:13px;margin-bottom:4px;"><strong>Equipo:</strong> ${escapeHtml(av.tipoAparato)} · <strong>${escapeHtml(av.marca)}</strong> ${escapeHtml(av.modelo)}</p>
-          <p style="font-size:13px;margin-bottom:4px;"><strong>Intervención:</strong> ${escapeHtml(av.tipoIntervencion)} (${escapeHtml(av.relacion)})</p>
+          <p style="font-size:12.5px;margin-bottom:4px;color:var(--text);">
+            <strong>📅 Fecha Contrato / Compra:</strong> <span style="color:#fb923c;font-weight:700;">${escapeHtml(av.fechaInstalacion || 'No registrada')}</span>
+            ${av.docCompra ? ` · <strong>📄 Nº Contrato:</strong> <span class="badge badge-blue">${escapeHtml(av.docCompra)}</span>` : ''}
+            ${av.numSerie ? ` · <strong>🔢 Nº Serie:</strong> <code>${escapeHtml(av.numSerie)}</code>` : ''}
+          </p>
+          <p style="font-size:12.5px;margin-bottom:4px;">
+            <strong>Instalación / Origen:</strong>
+            ${av.relacion === 'NO ES NUESTRA'
+              ? `<span class="badge badge-red">⚠️ NO ES DE BAZA (EXTERNA)</span>`
+              : (av.relacion === 'SUMINISTRADO'
+                ? `<span class="badge badge-amber">📦 SUMINISTRO SIN INSTALAR</span>`
+                : `<span class="badge badge-green">✅ INSTALADA POR BAZA MAZANO</span>`)}
+            · <span style="color:var(--text-muted);">${escapeHtml(av.tipoIntervencion)}</span>
+          </p>
           <p style="font-size:14px;margin-top:8px;color:#34d399;"><strong>Suma Importes Partes (` + '`SUMA IMPORTES AVISO`' + `):</strong> ${Number(av.sumaImportes || 0).toFixed(2)} €</p>
         </div>
       </div>
+
+      ${av.observacionesAliquo ? `
+      <div class="field" style="margin-bottom:14px;">
+        <label style="color:#38bdf8;">📋 Historial Unificado "Varios" en Aliquo (Contrato, Máquina e Intervenciones Previas)</label>
+        <div style="background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.3);border-radius:8px;padding:10px 12px;font-size:12px;white-space:pre-wrap;color:var(--text);max-height:150px;overflow-y:auto;line-height:1.45;">${escapeHtml(av.observacionesAliquo)}</div>
+      </div>
+      ` : ''}
 
       <div class="field" style="margin-bottom:14px;">
         <label>📝 Observaciones del Aviso (Síntoma / Pedido de Repuesto)</label>
@@ -415,7 +627,7 @@ async function selectAviso(idAviso) {
 }
 
 async function quickUpdateAviso(idAviso, patch) {
-  const res = await fetch(`/api/avisos/${idAviso}`, {
+  const res = await apiFetch(`/api/avisos/${idAviso}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch)
@@ -469,7 +681,7 @@ function formatCitaTimeShort(inicio, fin) {
 async function ensureAllCitasLoaded() {
   if (state.allCitas && state.allCitas.length > 500) return;
   try {
-    const res = await fetch('/api/citas?limit=2500');
+    const res = await apiFetch('/api/citas?limit=2500');
     const data = await res.json();
     if (data.ok && data.citas) {
       state.allCitas = data.citas;
@@ -482,7 +694,7 @@ async function ensureAllCitasLoaded() {
 async function loadCitasList(emailFilter = '') {
   const params = new URLSearchParams({ limit: '200' });
   if (emailFilter) params.set('email', emailFilter);
-  const res = await fetch(`/api/citas?${params}`);
+  const res = await apiFetch(`/api/citas?${params}`);
   const data = await res.json();
   if (data.ok) {
     state.citas = data.citas || [];
@@ -566,7 +778,7 @@ function renderCitasCalendarList() {
 // SUB-TAB 1.5 & APP MÓVIL: CALENDARIO SEMANAL GENERAL (SEMANA VISTA CARGAS)
 // =========================================================================
 function changeCalendarWeek(deltaWeeks, containerId, isMobile) {
-  if (!state.calViewDate) state.calViewDate = new Date('2026-11-05T08:00:00');
+  if (!state.calViewDate) state.calViewDate = new Date();
   const d = new Date(state.calViewDate);
   d.setDate(d.getDate() + (deltaWeeks * 7));
   state.calViewDate = d;
@@ -574,12 +786,18 @@ function changeCalendarWeek(deltaWeeks, containerId, isMobile) {
 }
 
 function setCalendarToday(containerId, isMobile) {
-  state.calViewDate = new Date('2026-11-05T08:00:00');
+  state.calViewDate = new Date();
   renderWeeklyCalendar(containerId, isMobile);
 }
 
 function setCalendarDemoWeek(dateStr, containerId, isMobile) {
-  state.calViewDate = new Date(dateStr + 'T08:00:00');
+  if (dateStr === 'NEXT_WEEK') {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    state.calViewDate = d;
+  } else {
+    state.calViewDate = new Date(dateStr + 'T08:00:00');
+  }
   renderWeeklyCalendar(containerId, isMobile);
 }
 
@@ -597,7 +815,7 @@ async function renderWeeklyCalendar(containerId = 'mandoSectionCalendario', isMo
   await ensureAllCitasLoaded();
 
   if (!state.calViewDate) {
-    state.calViewDate = new Date('2026-11-05T08:00:00');
+    state.calViewDate = new Date();
   }
   if (!state.calCrewFilter) {
     state.calCrewFilter = 'TODOS';
@@ -709,8 +927,8 @@ async function renderWeeklyCalendar(containerId = 'mandoSectionCalendario', isMo
         </div>
 
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-          <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px;" onclick="setCalendarToday('${containerId}', ${isMobile})">📍 Semana Actual (02-07 Nov)</button>
-          <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px;" onclick="setCalendarDemoWeek('2026-11-09', '${containerId}', ${isMobile})">⏩ Próxima Semana (09-14 Nov)</button>
+          <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px;" onclick="setCalendarToday('${containerId}', ${isMobile})">📍 Hoy / Semana Actual</button>
+          <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px;" onclick="setCalendarDemoWeek('NEXT_WEEK', '${containerId}', ${isMobile})">⏩ Próxima Semana (+7d)</button>
           <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px;" onclick="setCalendarDemoWeek('2026-09-14', '${containerId}', ${isMobile})">🔥 Histórico Pico (14-19 Sep · 38 citas)</button>
         </div>
       </div>
@@ -876,7 +1094,7 @@ function refreshDispatchMap(resetZoom = false) {
 // SUB-TAB 1.3: RADAR DE AVISOS PERDIDOS (AGENDADOS SIN FICHAJE)
 // =========================================================================
 async function loadAvisosPerdidosTable() {
-  const res = await fetch('/api/avisos?estado=PERDIDOS&limit=80');
+  const res = await apiFetch('/api/avisos?estado=PERDIDOS&limit=80');
   const data = await res.json();
   if (!data.ok) return;
 
@@ -1109,7 +1327,7 @@ async function refreshMobileView() {
   }
 
   if (state.mobileTab === 'citas') {
-    const res = await fetch(`/api/citas?email=${encodeURIComponent(email)}&limit=40`);
+    const res = await apiFetch(`/api/citas?email=${encodeURIComponent(email)}&limit=40`);
     const data = await res.json();
     const misCitas = data.citas || [];
 
@@ -1171,7 +1389,7 @@ async function refreshMobileView() {
       }).join('')}
     `;
   } else if (state.mobileTab === 'radar') {
-    const res = await fetch(`/api/radar-cercanos?email=${encodeURIComponent(email)}`);
+    const res = await apiFetch(`/api/radar-cercanos?email=${encodeURIComponent(email)}`);
     const data = await res.json();
     const cercanos = data.cercanos || [];
 
@@ -1234,7 +1452,7 @@ async function iniciarFichajeEnTerreno(idAviso, avisoNumero, forzarApertura = fa
   const operario = document.getElementById('mobileTechSelect').value;
   const companeroApoyo = getSelectedMobilePartnersString();
 
-  const res = await fetch('/api/fichajes/iniciar', {
+  const res = await apiFetch('/api/fichajes/iniciar', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idAviso, avisoNumero, operario, companeroApoyo, forzarApertura })
@@ -1314,6 +1532,8 @@ function openCerrarFichajeModal(idFichaje = null, idAviso = null) {
     : `🛠️ Cerrar Parte de Trabajo SAT`;
 
   document.getElementById('closeNotas').value = '';
+  const chk3 = document.getElementById('chkAjustarSalida3Min');
+  if (chk3) chk3.checked = false;
   document.getElementById('closeMinutos').value = 45;
   document.getElementById('closeKmIdaVuelta').value = av ? (av.kmIdaVuelta || 14) : 14;
   document.getElementById('closeTipoIntervencion').value = av && av.tipoIntervencion ? av.tipoIntervencion : 'SAT NORMAL';
@@ -1555,7 +1775,7 @@ async function recalcClosingTariff() {
   };
 
   try {
-    const res = await fetch('/api/calcular-tarifa', {
+    const res = await apiFetch('/api/calcular-tarifa', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1612,6 +1832,8 @@ async function submitCerrarFichaje() {
     companeroApoyo: getSelectedMobilePartnersString(),
     minutosTrabajados: Number(document.getElementById('closeMinutos').value) || 45,
     kmIdaVuelta: Number(document.getElementById('closeKmIdaVuelta').value) || 14,
+    tipoIntervencion: document.getElementById('closeTipoIntervencion') ? document.getElementById('closeTipoIntervencion').value : 'SAT NORMAL',
+    condicionCliente: document.getElementById('closeCondicionCliente') ? document.getElementById('closeCondicionCliente').value : 'CLIENTE',
     importe: Number(document.getElementById('closeImporteFinal').value) || 0,
     metodoPago: document.getElementById('closeMetodoPago').value,
     tratoCliente: document.getElementById('closeTratoCliente').value,
@@ -1624,7 +1846,7 @@ async function submitCerrarFichaje() {
     fotoAdjuntar: state.compressedPhotoDataUrl
   };
 
-  const res = await fetch('/api/fichajes/cerrar', {
+  const res = await apiFetch('/api/fichajes/cerrar', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -1638,11 +1860,11 @@ async function submitCerrarFichaje() {
     if (state.role === 'admin') renderAdminView();
 
     if (data.albaran) {
-      alert(`⚡ PARTE CERRADO Y ALBARÁN SINCRONIZADO EN ALIQUO:\n\n• Nº Albarán: ${data.albaran.idAlbaran}\n• Cliente: ${data.albaran.clienteNombre}\n• Total: ${Number(data.albaran.totalImporte).toFixed(2)} €\n• Líneas: ${data.albaran.lineas.length}\n\nHa quedado contabilizado en Aliquo sin necesidad de entrar al ERP.`);
+      alert(`📦 PARTE CERRADO Y PREPARADO PARA ALIQUO:\n\n• Ref. Albarán Cola SAT: ${data.albaran.idAlbaran}\n• Cliente: ${data.albaran.clienteNombre}\n• Total: ${Number(data.albaran.totalImporte).toFixed(2)} €\n• Líneas: ${data.albaran.lineas.length}\n\nQueda en cola local SAT para su revisión/volcado en Aliquo.`);
     }
 
     if (confirm(`✅ ¡Parte cerrado correctamente y volcado al Aviso #${data.aviso ? data.aviso.numero : ''}!\n\n¿Deseas abrir el Parte de Trabajo Oficial en PDF para imprimir o enviar al cliente?`)) {
-      window.open(`/api/parte-pdf/${data.fichaje.idFichaje}`, '_blank');
+      window.open(withAuthToken(`/api/parte-pdf/${data.fichaje.idFichaje}`), '_blank');
     }
   }
 }
@@ -1692,16 +1914,21 @@ function switchAdminTab(tab) {
 async function renderAdminView() {
   renderAdminKpis();
   if (state.adminTab === 'aliquo') {
-    const res = await fetch('/api/avisos?estado=FINALIZADO,%20PASAR%20ALIQUO&limit=150');
+    const res = await apiFetch('/api/avisos?estado=FINALIZADO,%20PASAR%20ALIQUO&limit=150');
     const data = await res.json();
     const list = data.avisos || [];
     const el = document.getElementById('adminSectionAliquo');
 
     el.innerHTML = `
       <div class="panel">
-        <div class="panel-header">
+        <div class="panel-header" style="flex-wrap:wrap;gap:10px;">
           <h2>🧾 Bandeja de Facturación y Cierre en Aliquo (` + '`FINALIZADO, PASAR ALIQUO`' + `)</h2>
-          <span class="badge badge-purple">${list.length} partes listos para contabilizar</span>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="badge badge-purple">${list.length} partes listos para contabilizar</span>
+            <a class="btn btn-ghost" style="padding:6px 12px;font-size:12px;text-decoration:none;" href="${withAuthToken('/api/admin/backup')}" download>
+              💾 Descargar Backup DB (.json)
+            </a>
+          </div>
         </div>
         <div class="panel-body" style="overflow-x:auto;">
           <table class="data-table">
@@ -1732,11 +1959,11 @@ async function renderAdminView() {
                     <button class="btn btn-ghost" style="padding:5px 9px;font-size:11px;" onclick="copyAliquoLine(${a.numero}, '${escapeHtml(a.codigoCliente)}', '${escapeHtml(a.nombreCliente)} ${escapeHtml(a.apellidosCliente)}', ${Number(a.sumaImportes || 0)})">
                       📋 Copiar Concepto Aliquo
                     </button>
-                    <a class="btn btn-ghost" style="padding:5px 9px;font-size:11px;text-decoration:none;" href="/api/parte-pdf/${a.idAviso}" target="_blank">
+                    <a class="btn btn-ghost" style="padding:5px 9px;font-size:11px;text-decoration:none;" href="${withAuthToken(`/api/parte-pdf/${a.idAviso}`)}" target="_blank">
                       🖨️ PDF
                     </a>
                     <button class="btn btn-green" style="padding:5px 9px;font-size:11px;" onclick="volcarAlbaranDirectoAliquo('${a.idAviso}', ${a.numero})">
-                      ⚡ Volcar a Aliquo (1 Clic)
+                      📦 Preparar Albarán Aliquo
                     </button>
                   </td>
                 </tr>
@@ -1747,7 +1974,7 @@ async function renderAdminView() {
       </div>
     `;
   } else if (state.adminTab === 'contratos') {
-    const res = await fetch('/api/contratos-cm');
+    const res = await apiFetch('/api/contratos-cm');
     const data = await res.json();
     const contratos = data.contratos || [];
     const pendientes = contratos.filter(c => !c.pasadoAAvisos);
@@ -1816,15 +2043,11 @@ async function renderAdminView() {
             </p>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-            <a href="/api/contratos-cm/descargar-remesa-sepa" download="REMESA_SEPA_CM2026_BAZA_MAZANO.xml" class="btn btn-primary" style="background:#dc2626;border-color:#b91c1c;padding:10px 16px;font-size:12px;" title="Descargar fichero bancario XML para subir al Banco Santander">
+            <a href="${withAuthToken('/api/contratos-cm/descargar-remesa-sepa')}" download="REMESA_SEPA_CM2026_BAZA_MAZANO.xml" class="btn btn-primary" style="background:#dc2626;border-color:#b91c1c;padding:10px 16px;font-size:12px;" title="Descargar fichero bancario XML para subir al Banco Santander">
               📥 Descargar XML SEPA Santander (${totalSuma.toLocaleString('es-ES', { minimumFractionDigits: 0 })} €)
             </a>
             <button class="btn btn-green" style="padding:10px 16px;font-size:12px;" onclick="confirmarRemesaMasiva(${pendientes.length})">
               ⚡ Confirmar Remesa Cobrada y Activar ${pendientes.length} Avisos en Ruta
-            </button>
-          </div>
-        </div>
-      </div>
             </button>
           </div>
         </div>
@@ -1971,27 +2194,27 @@ async function markAsPasadoAliquo(idAviso) {
 
 async function volcarAlbaranDirectoAliquo(idAviso, numero) {
   try {
-    const res = await fetch('/api/aliquo/volcar-albaran', {
+    const res = await apiFetch('/api/aliquo/volcar-albaran', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ idAviso, numero })
     });
     const data = await res.json();
     if (data.ok) {
-      alert(`⚡ ALBARÁN GENERADO Y SINCRONIZADO CON ALIQUO:\n\n• Nº Albarán: ${data.albaran.idAlbaran}\n• Cliente: ${data.albaran.clienteNombre}\n• Total Albarán: ${Number(data.albaran.totalImporte).toFixed(2)} €\n• Líneas creadas: ${data.albaran.lineas.length}\n\nEl aviso ha pasado a estado [PASADO ALIQUO].`);
+      alert(`📦 ALBARÁN PREPARADO EN COLA ALIQUO:\n\n• Ref. Albarán SAT: ${data.albaran.idAlbaran}\n• Cliente: ${data.albaran.clienteNombre}\n• Total Albarán: ${Number(data.albaran.totalImporte).toFixed(2)} €\n• Líneas creadas: ${data.albaran.lineas.length}\n\nEl aviso ha pasado a estado [PASADO ALIQUO] (cola lista para volcado en Fase 2).`);
       await loadAvisosList();
       renderAdminView();
       renderAdminKpis();
     } else {
-      alert(`Error al volcar a Aliquo: ${data.error || 'Desconocido'}`);
+      alert(`Error al preparar albarán: ${data.error || 'Desconocido'}`);
     }
   } catch (e) {
-    alert(`Error de conexión con Aliquo: ${e.message}`);
+    alert(`Error de conexión con servidor SAT: ${e.message}`);
   }
 }
 
 async function activarContratoCmIndividual(idContrato) {
-  const res = await fetch('/api/contratos-cm/activar', {
+  const res = await apiFetch('/api/contratos-cm/activar', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idContrato, anota: 'SILVIA' })
@@ -2005,14 +2228,14 @@ async function activarContratoCmIndividual(idContrato) {
 }
 
 async function activarLoteContratosCm() {
-  const resList = await fetch('/api/contratos-cm?pendientes=1');
+  const resList = await apiFetch('/api/contratos-cm?pendientes=1');
   const dList = await resList.json();
   const ids = (dList.contratos || []).slice(0, 5).map(c => c.idContrato);
   if (ids.length === 0) {
     alert('Todos los contratos CM están ya activados en Avisos.');
     return;
   }
-  const res = await fetch('/api/contratos-cm/activar', {
+  const res = await apiFetch('/api/contratos-cm/activar', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids, anota: 'SILVIA' })
@@ -2039,7 +2262,7 @@ async function confirmarRemesaMasiva(pendientesCount) {
   if (!confirm(confirmMsg)) return;
 
   try {
-    const res = await fetch('/api/contratos-cm/confirmar-remesa', {
+    const res = await apiFetch('/api/contratos-cm/confirmar-remesa', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
@@ -2074,7 +2297,7 @@ async function submitNuevoGastoVehiculo(e) {
     kms: Number(document.getElementById('gvKms').value) || 0,
     importe: Number(document.getElementById('gvImporte').value) || 0
   };
-  const res = await fetch('/api/vehiculos', {
+  const res = await apiFetch('/api/vehiculos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -2093,6 +2316,12 @@ function openNuevoAvisoModal() {
   document.getElementById('newCodigoCliente').value = 'NO ES CLIENTE';
   document.getElementById('intakeSearchClient').value = '';
   document.getElementById('intakeAutocompleteList').style.display = 'none';
+  const obsWrap = document.getElementById('newObservacionesAliquoWrap');
+  if (obsWrap) obsWrap.style.display = 'none';
+  const obsAliquo = document.getElementById('newObservacionesAliquo');
+  if (obsAliquo) obsAliquo.value = '';
+  const instBaza = document.getElementById('newInstalacionBaza');
+  if (instBaza) instBaza.value = '';
 
   const banner = document.getElementById('intakeStatusBanner');
   if (banner) {
@@ -2120,28 +2349,40 @@ function onIntakeClientSearch(val) {
     return;
   }
   intakeTimer = setTimeout(async () => {
-    const res = await fetch(`/api/aliquo/buscar-cliente?q=${encodeURIComponent(val)}`);
+    const res = await apiFetch(`/api/sat/buscar-cliente?q=${encodeURIComponent(val)}`);
     const data = await res.json();
     if (!data.ok || !data.clientes || data.clientes.length === 0) {
-      box.innerHTML = `<div class="autocomplete-item" style="color:var(--text-muted);">Sin coincidencias en Aliquo SQL para "${escapeHtml(val)}". Se creará como NUEVO cliente en Aliquo al guardar.</div>`;
+      box.innerHTML = `<div class="autocomplete-item" style="color:var(--text-muted);">Sin coincidencias en catálogo Aliquo para "${escapeHtml(val)}". Se guardará pre-alta local en SAT al crear el aviso.</div>`;
       box.style.display = 'block';
       return;
     }
 
     state.lastIntakeClients = data.clientes;
-    box.innerHTML = data.clientes.map((c, idx) => `
+    box.innerHTML = data.clientes.map((c, idx) => {
+      const relBadge = c.relacion === 'NO ES NUESTRA'
+        ? `<span class="badge badge-red" style="font-size:10px;">⚠️ NO ES DE BAZA</span>`
+        : (c.relacion === 'SUMINISTRADO'
+          ? `<span class="badge badge-amber" style="font-size:10px;">📦 SIN INSTALAR</span>`
+          : (c.marca || c.marcaModelo || c.fechaContrato ? `<span class="badge badge-blue" style="font-size:10px;">✅ INSTALADA BAZA</span>` : ''));
+      return `
       <div class="autocomplete-item" onclick="selectIntakeClient(${idx})">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
           <strong style="color:#fb923c;">${escapeHtml(c.nombreCompleto)} (${escapeHtml(c.codigoCliente)})</strong>
-          <span class="badge badge-green">${escapeHtml(c.origen)}</span>
+          <div style="display:flex;gap:4px;align-items:center;">
+            ${relBadge}
+            <span class="badge badge-green">${escapeHtml(c.origen)}</span>
+          </div>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.4;">
           📍 ${escapeHtml(c.direccionCompleta)} · 📞 ${escapeHtml(c.telefono1)}
-          ${c.marca ? ` · 🔥 <strong>${escapeHtml(c.tipoAparato)} ${escapeHtml(c.marca)} ${escapeHtml(c.modelo)}</strong>` : ''}
-          ${c.contratoMant ? ` · <span style="color:#34d399;font-weight:700;">[CON CONTRATO CM]</span>` : ''}
+          ${(c.marca || c.modelo || c.marcaModelo) ? `<br>🔥 <strong style="color:var(--text);">${escapeHtml(c.tipoAparato)} · ${escapeHtml(c.marca)} ${escapeHtml(c.modelo || c.marcaModelo)}</strong>` : ''}
+          ${c.fechaContrato ? ` · 📅 <strong>Compra/Cto: ${escapeHtml(c.fechaContrato)}</strong>` : ''}
+          ${c.numContrato ? ` · 📄 <strong>${escapeHtml(c.numContrato)}</strong>` : ''}
+          ${c.numSerie ? ` · 🔢 <code>S/N: ${escapeHtml(c.numSerie)}</code>` : ''}
+          ${c.contratoMant ? ` · <span style="color:#34d399;font-weight:700;">[🛡️ CON CONTRATO CM]</span>` : ''}
         </div>
       </div>
-    `).join('');
+    `}).join('');
     box.style.display = 'block';
   }, 200);
 }
@@ -2154,19 +2395,59 @@ function selectIntakeClient(idx) {
   document.getElementById('newApellidosCliente').value = c.apellidosCliente || '';
   document.getElementById('newTelefono1').value = c.telefono1 || '';
   document.getElementById('newDireccionCompleta').value = c.direccionCompleta || '';
+  if (c.email && document.getElementById('newEmail')) document.getElementById('newEmail').value = c.email;
   if (c.tipoAparato) document.getElementById('newTipoAparato').value = c.tipoAparato;
-  if (c.marca) document.getElementById('newMarca').value = c.marca;
-  if (c.modelo) document.getElementById('newModelo').value = c.modelo;
+  document.getElementById('newMarca').value = c.marca || '';
+  document.getElementById('newModelo').value = c.modelo || c.marcaModelo || '';
+  if (document.getElementById('newFechaInstalacion')) {
+    document.getElementById('newFechaInstalacion').value = c.fechaContrato || '';
+  }
+  if (document.getElementById('newDocCompra')) {
+    document.getElementById('newDocCompra').value = c.numContrato || '';
+  }
+  if (document.getElementById('newNumSerie')) {
+    document.getElementById('newNumSerie').value = c.numSerie || '';
+  }
+  if (document.getElementById('newRelacion')) {
+    document.getElementById('newRelacion').value = c.relacion || 'INSTALADO';
+  }
+  if (document.getElementById('newInstalacionBaza')) {
+    document.getElementById('newInstalacionBaza').value = c.instalacionBaza || '';
+  }
+  const obsWrap = document.getElementById('newObservacionesAliquoWrap');
+  const obsTextarea = document.getElementById('newObservacionesAliquo');
+  if (obsWrap && obsTextarea) {
+    if (c.observacionesAliquo) {
+      obsTextarea.value = c.observacionesAliquo;
+      obsWrap.style.display = 'block';
+    } else {
+      obsTextarea.value = '';
+      obsWrap.style.display = 'none';
+    }
+  }
   document.getElementById('newContratoMant').value = c.contratoMant ? 'true' : 'false';
   document.getElementById('intakeAutocompleteList').style.display = 'none';
 
   const banner = document.getElementById('intakeStatusBanner');
   if (banner) {
     banner.style.display = 'block';
-    banner.style.background = 'rgba(16,185,129,0.15)';
-    banner.style.border = '1px solid #10b981';
-    banner.style.color = '#34d399';
-    banner.innerHTML = `✅ <strong>Cliente Existente:</strong> [${escapeHtml(c.codigoCliente)}] ${escapeHtml(c.nombreCompleto)} (${escapeHtml(c.origen)})`;
+    if (c.relacion === 'NO ES NUESTRA') {
+      banner.style.background = 'rgba(239,68,68,0.15)';
+      banner.style.border = '1px solid #ef4444';
+      banner.style.color = '#fca5a5';
+      banner.innerHTML = `⚠️ <strong>ATENCIÓN — MÁQUINA EXTERNA (NO INSTALADA POR BAZA):</strong> [${escapeHtml(c.codigoCliente)}] ${escapeHtml(c.nombreCompleto)} · ${escapeHtml(c.marca)} ${escapeHtml(c.modelo)}`;
+    } else {
+      banner.style.background = 'rgba(16,185,129,0.15)';
+      banner.style.border = '1px solid #10b981';
+      banner.style.color = '#34d399';
+      const extraMeta = [
+        c.fechaContrato ? `📅 Compra: <strong>${escapeHtml(c.fechaContrato)}</strong>` : '',
+        c.numContrato ? `📄 Cto: <strong>${escapeHtml(c.numContrato)}</strong>` : '',
+        (c.marca || c.modelo) ? `🔥 <strong>${escapeHtml(c.marca)} ${escapeHtml(c.modelo)}</strong>` : '',
+        c.instalacionBaza ? `(${escapeHtml(c.instalacionBaza)})` : ''
+      ].filter(Boolean).join(' · ');
+      banner.innerHTML = `✅ <strong>Ficha Autocompletada del Tirón:</strong> [${escapeHtml(c.codigoCliente)}] ${escapeHtml(c.nombreCompleto)} ${extraMeta ? '<br>' + extraMeta : ''}`;
+    }
   }
 }
 
@@ -2186,17 +2467,23 @@ async function submitNuevoAviso(e) {
     tipoAparato: document.getElementById('newTipoAparato').value,
     marca: document.getElementById('newMarca').value,
     modelo: document.getElementById('newModelo').value,
+    fechaInstalacion: document.getElementById('newFechaInstalacion') ? document.getElementById('newFechaInstalacion').value.trim() : '',
+    docCompra: document.getElementById('newDocCompra') ? document.getElementById('newDocCompra').value.trim() : '',
+    numSerie: document.getElementById('newNumSerie') ? document.getElementById('newNumSerie').value.trim() : '',
+    relacion: document.getElementById('newRelacion') ? document.getElementById('newRelacion').value : 'INSTALADO',
+    instalacionBaza: document.getElementById('newInstalacionBaza') ? document.getElementById('newInstalacionBaza').value : '',
+    observacionesAliquo: document.getElementById('newObservacionesAliquo') ? document.getElementById('newObservacionesAliquo').value : '',
     tipoIntervencion: document.getElementById('newTipoIntervencion').value,
     prioridad: document.getElementById('newPrioridad').value,
     contratoMant: document.getElementById('newContratoMant').value === 'true',
     anota: document.getElementById('newAnota').value,
     operarioPreasignado: document.getElementById('newOperarioPreasignado').value,
     observaciones: document.getElementById('newObservaciones').value,
-    crearClienteEnAliquo: true,
+    crearClienteEnAliquo: !document.getElementById('newCodigoCliente').value || document.getElementById('newCodigoCliente').value === 'NO ES CLIENTE',
     estadoAviso: 'SIN PROCESAR'
   };
 
-  const res = await fetch('/api/avisos', {
+  const res = await apiFetch('/api/avisos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -2209,7 +2496,7 @@ async function submitNuevoAviso(e) {
     selectAviso(data.aviso.idAviso);
 
     if (data.clienteCreado) {
-      alert(`⚡ CLIENTE NUEVO CREADO DIRECTO EN ALIQUO:\n\n• Código Asignado: ${data.clienteCreado.Codigo}\n• Nombre: ${data.clienteCreado.Nombre}\n• Aviso SAT Asociado: #${data.aviso.numero}\n\nQueda registrado en Aliquo sin que tengas que abrir el ERP.`);
+      alert(`📦 PRE-ALTA LOCAL REGISTRADA EN SAT:\n\n• Código Provisional SAT: ${data.clienteCreado.Codigo}\n• Nombre: ${data.clienteCreado.Nombre}\n• Aviso SAT Asociado: #${data.aviso.numero}\n\nQueda en cola de pre-alta SAT para su revisión/alta contable en Aliquo.`);
     } else {
       alert(`✅ Aviso #${data.aviso.numero} registrado y vinculado al cliente [${data.aviso.codigoCliente}] ${data.aviso.nombreCliente}.`);
     }
@@ -2256,7 +2543,7 @@ async function submitAgendarCita(e) {
     descripcion: document.getElementById('citaDescripcion').value
   };
 
-  const res = await fetch('/api/citas', {
+  const res = await apiFetch('/api/citas', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -2286,7 +2573,14 @@ async function sendAndMarkWhatsappCita() {
   const tel = String(document.getElementById('waTelefono').value || '').replace(/\D/g, '');
   const mensaje = document.getElementById('waMensajeTexto').value;
 
-  await fetch(`/api/citas/${idCita}/confirmar-whatsapp`, {
+  const cleanPhone = tel.startsWith('34') ? tel : (tel.length === 9 ? `34${tel}` : tel);
+  window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(mensaje)}`, '_blank');
+
+  if (!confirm('Se ha abierto WhatsApp Web/App con el mensaje preparado.\n\n¿Ya lo has enviado al cliente y quieres marcar esta cita como "✅ Cliente Avisado"?')) {
+    return;
+  }
+
+  await apiFetch(`/api/citas/${idCita}/confirmar-whatsapp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mensaje })
@@ -2294,9 +2588,6 @@ async function sendAndMarkWhatsappCita() {
 
   closeModal('modalConfirmarWhatsapp');
   await loadCitasList();
-
-  const cleanPhone = tel.startsWith('34') ? tel : (tel.length === 9 ? `34${tel}` : tel);
-  window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(mensaje)}`, '_blank');
 }
 
 function openWhatsappDirectClient(telefono, nombre, numero) {
