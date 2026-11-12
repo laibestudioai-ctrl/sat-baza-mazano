@@ -97,13 +97,13 @@ function getNextAvisoNumero() {
 // =========================================================================
 // AUTENTICACIÓN POR PIN Y PERMISOS POR ROL (FASES 1)
 // =========================================================================
-const AUTH_SECRET = process.env.SAT_AUTH_SECRET || crypto.createHash('sha256').update('SAT_BAZA_2026_LAIBE_HMAC_KEY').digest('hex');
+const AUTH_SECRET = process.env.AUTH_SECRET || process.env.SAT_AUTH_SECRET || crypto.createHash('sha256').update('SAT_BAZA_2026_LAIBE_HMAC_KEY').digest('hex');
 
 const PIN_USERS = [
   { id: 'juanpablo', nombre: 'Juan Pablo (Admin)', pin: process.env.PIN_ADMIN || '445215', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
   { id: 'leandro', nombre: 'Leandro (Dirección)', pin: process.env.PIN_LEANDRO || '1347', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
-  { id: 'silvia', nombre: 'Silvia (Administración)', pin: process.env.PIN_SILVIA || '1010', roles: ['admin', 'mando'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
-  { id: 'chus', nombre: 'Chus (Cuentas y Admin)', pin: process.env.PIN_CHUS || '2866', roles: ['admin', 'mando'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
+  { id: 'silvia', nombre: 'Silvia (Administración)', pin: process.env.PIN_SILVIA || '1010', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
+  { id: 'chus', nombre: 'Chus (Cuentas y Admin)', pin: process.env.PIN_CHUS || '2866', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
   { id: 'jacobo', nombre: 'Jacobo (Jefe SAT)', pin: process.env.PIN_JACOBO || '9553', roles: ['mando', 'tecnico'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
   { id: 'rosa', nombre: 'Rosa (Atención/Comercial)', pin: process.env.PIN_ROSA || '1601', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
   { id: 'lidia', nombre: 'Lidia (SAT y Repuestos)', pin: process.env.PIN_LIDIA || '6272', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
