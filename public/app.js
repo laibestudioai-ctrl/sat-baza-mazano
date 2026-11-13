@@ -1924,7 +1924,9 @@ function openGoogleReviewModal(aviso, operarioEmail) {
   document.getElementById('revEmail').value = aviso.email || '';
   document.getElementById('revMensajeTexto').value =
     `¡Hola${greetingName ? ` ${greetingName}` : ''}! Soy ${techName} del equipo técnico de Baza Mazano 👋\n\n` +
-    `Ha sido un placer atenderte hoy. Si ha quedado todo perfecto con nuestro servicio, ¿nos echas una mano con una valoración rápida en Google? Solo son 20 segundos y, como empresa local, tus palabras nos ayudan muchísimo a seguir mejorando:\n\n` +
+    `Ha sido un placer atenderte hoy.\n` +
+    `Si ha quedado todo perfecto con nuestro servicio, *¿nos echas una mano con una valoración rápida en Google?*\n` +
+    `*Solo son 20 segundos* y, como empresa local, tus palabras nos ayudan muchísimo a seguir mejorando:\n\n` +
     `⭐ ${reviewUrl}\n\n` +
     `¡Mil gracias de parte de todo el equipo!`;
   document.getElementById('modalResenaGoogle').classList.add('open');
