@@ -1914,16 +1914,19 @@ async function submitCerrarFichaje() {
 }
 
 function openGoogleReviewModal(aviso, operarioEmail) {
-  const reviewUrl = (state.bootstrap && state.bootstrap.googleReviewUrl) || 'https://www.google.com/search?q=Baza+Mazano+Valladolid';
+  const reviewUrl = (state.bootstrap && state.bootstrap.googleReviewUrl) || 'https://g.page/r/CeTJ0YmzOC_AEAE/review';
   const techShort = String(operarioEmail || '').split('@')[0].split('.')[0];
-  const techName = techShort ? techShort.charAt(0).toUpperCase() + techShort.slice(1) : 'nuestro técnico';
-  const cliente = `${aviso.nombreCliente || ''} ${aviso.apellidosCliente || ''}`.trim();
+  const techName = techShort ? techShort.charAt(0).toUpperCase() + techShort.slice(1) : 'nuestro equipo';
+  const firstName = String(aviso.nombreCliente || '').trim().split(/\s+/)[0];
+  const greetingName = firstName ? firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase() : '';
 
   document.getElementById('revTelefono').value = aviso.telefono1 || '';
   document.getElementById('revEmail').value = aviso.email || '';
   document.getElementById('revMensajeTexto').value =
-    `Hola ${cliente || 'cliente'}, muchas gracias por confiar en *Baza Mazano S.L.* para el servicio técnico de su equipo.\n\n` +
-    `Si ha quedado satisfecho con la atención de ${techName}, nos ayudaría muchísimo que nos dejara su valoración en Google (solo 30 segundos):\n${reviewUrl}\n\n¡Gracias!`;
+    `¡Hola${greetingName ? ` ${greetingName}` : ''}! Soy ${techName} del equipo técnico de Baza Mazano 👋\n\n` +
+    `Ha sido un placer atenderte hoy. Si ha quedado todo perfecto con nuestro servicio, ¿nos echas una mano con una valoración rápida en Google? Solo son 20 segundos y, como empresa local, tus palabras nos ayudan muchísimo a seguir mejorando:\n\n` +
+    `⭐ ${reviewUrl}\n\n` +
+    `¡Mil gracias de parte de todo el equipo!`;
   document.getElementById('modalResenaGoogle').classList.add('open');
 }
 

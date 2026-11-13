@@ -1304,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
         marcas: db.marcas,
         repuestos: db.repuestos,
         vehiculos: VEHICULOS_OFICIALES,
-        googleReviewUrl: process.env.GOOGLE_REVIEW_URL || 'https://www.google.com/search?q=Baza+Mazano+Valladolid+rese%C3%B1as',
+        googleReviewUrl: process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/CeTJ0YmzOC_AEAE/review',
         gastosVehiculos: db.gastosVehiculos,
         fichajesAbiertos
       });
