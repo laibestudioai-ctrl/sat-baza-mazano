@@ -97,11 +97,13 @@ function applyAuthUserUi() {
   const btnMando = document.getElementById('btnRoleMando');
   const btnTec = document.getElementById('btnRoleTecnico');
   const btnAdmin = document.getElementById('btnRoleAdmin');
+  const btnNuevoAviso = document.getElementById('btnNuevoAvisoExpress');
   const techSelect = document.getElementById('mobileTechSelect');
 
   if (!user) {
     if (badge) badge.style.display = 'none';
     if (btnSwitch) btnSwitch.style.display = 'none';
+    if (btnNuevoAviso) btnNuevoAviso.style.display = 'none';
     return;
   }
 
@@ -110,6 +112,7 @@ function applyAuthUserUi() {
     badge.style.display = 'inline-flex';
   }
   if (btnSwitch) btnSwitch.style.display = 'inline-flex';
+  if (btnNuevoAviso) btnNuevoAviso.style.display = user.canCreateAviso ? '' : 'none';
 
   const roles = Array.isArray(user.roles) ? user.roles : ['mando'];
   if (btnMando) btnMando.style.display = roles.includes('mando') ? '' : 'none';
@@ -425,12 +428,32 @@ function debounceLoadAvisos() {
   searchTimer = setTimeout(() => loadAvisosList(), 220);
 }
 
+function formatDateES(str) {
+  if (!str) return '-';
+  const s = String(str).trim();
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) return s;
+  const parsed = new Date(s.includes('T') ? s : s.replace(' ', 'T'));
+  if (!isNaN(parsed.getTime())) {
+    const d = String(parsed.getDate()).padStart(2, '0');
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const y = parsed.getFullYear();
+    const hh = String(parsed.getHours()).padStart(2, '0');
+    const mm = String(parsed.getMinutes()).padStart(2, '0');
+    return (s.length <= 10 && !s.includes(':')) ? `${d}/${m}/${y}` : `${d}/${m}/${y} ${hh}:${mm}`;
+  }
+  return s;
+}
+
 async function loadAvisosList() {
   const estado = document.getElementById('filterEstadoAviso').value;
   const operario = document.getElementById('filterOperarioAviso').value;
+  const prioridadEl = document.getElementById('filterPrioridadAviso');
+  const sortEl = document.getElementById('sortAvisosOrder');
+  const prioridad = prioridadEl ? prioridadEl.value : 'TODAS';
+  const sort = sortEl ? sortEl.value : 'newest';
   const q = document.getElementById('searchAvisosInput').value;
 
-  const params = new URLSearchParams({ estado, operario, q, limit: '150' });
+  const params = new URLSearchParams({ estado, operario, prioridad, sort, q, limit: '150' });
   const res = await apiFetch(`/api/avisos?${params}`);
   const data = await res.json();
   if (!data.ok) return;
@@ -447,11 +470,17 @@ async function loadAvisosList() {
 
   container.innerHTML = state.avisos.map(a => {
     const isSel = state.selectedAviso && state.selectedAviso.idAviso === a.idAviso;
+    const isFuego = Boolean(a.esFuego) || Number(a.llamadasTienda || 0) > 0;
+    const prioUpper = String(a.prioridad || 'MEDIA').toUpperCase();
+    const prioClass = isFuego ? 'prio-fuego' : (prioUpper === 'ALTA' ? 'prio-alta' : (prioUpper === 'BAJA' ? 'prio-baja' : 'prio-media'));
     return `
-      <div class="aviso-item ${isSel ? 'selected' : ''}" onclick="selectAviso('${a.idAviso}')">
+      <div class="aviso-item ${prioClass} ${isSel ? 'selected' : ''}" onclick="selectAviso('${a.idAviso}')">
         <div class="aviso-item-top">
           <span class="aviso-num">#${a.numero} · ${escapeHtml(a.poblacion || 'VALLADOLID')} (${a.kmIdaVuelta || 14} km I/V)</span>
-          ${badgeForPrioridad(a.prioridad)}
+          <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
+            ${isFuego ? `<span class="badge badge-red" style="background:#dc2626;color:#fff;">🔥 FUEGO${a.llamadasTienda > 1 ? ' (' + a.llamadasTienda + ')' : ''}</span>` : ''}
+            ${badgeForPrioridad(a.prioridad)}
+          </div>
         </div>
         <div class="aviso-client">
           ${escapeHtml(a.nombreCliente)} ${escapeHtml(a.apellidosCliente)}
@@ -462,9 +491,13 @@ async function loadAvisosList() {
           <span>🔥 ${escapeHtml(a.tipoAparato)} · <strong>${escapeHtml(a.marca || 'S/M')}</strong> ${escapeHtml(a.modelo || '')}</span>
           <span>👷 ${escapeHtml(a.operarioPreasignado || 'JACOBO')}</span>
         </div>
-        <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
+        <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
           ${badgeForEstado(a.estadoAviso)}
-          <span style="font-size:11px;color:var(--text-muted);">${escapeHtml(a.tipoIntervencion)}</span>
+          <span class="intervencion-hero-badge">🔧 ${escapeHtml(a.tipoIntervencion || 'SAT NORMAL')}</span>
+        </div>
+        <div style="margin-top:4px;font-size:10.5px;color:var(--text-muted);display:flex;justify-content:space-between;">
+          <span>📅 Entrada: ${escapeHtml(formatDateES(a.fecha))}</span>
+          <span>Anotó: ${escapeHtml(a.anota || 'OFICINA')}</span>
         </div>
       </div>
     `;
@@ -491,21 +524,27 @@ async function selectAviso(idAviso) {
   const panel = document.getElementById('avisoDetailPanel');
 
   const tratoColor = av.tratoCliente === 'MALO' ? 'badge-red' : (av.tratoCliente === 'REGULAR' ? 'badge-amber' : 'badge-green');
+  const isFuego = Boolean(av.esFuego) || Number(av.llamadasTienda || 0) > 0;
 
   panel.innerHTML = `
     <div class="panel-header">
       <div>
         <h2>
           Aviso #${av.numero} — ${escapeHtml(av.nombreCliente)} ${escapeHtml(av.apellidosCliente)}
+          <span class="intervencion-hero-badge" style="font-size:12px;">🔧 ${escapeHtml(av.tipoIntervencion || 'SAT NORMAL')}</span>
+          ${isFuego ? `<span class="badge badge-red" style="background:#dc2626;color:#fff;">🔥 FUEGO (${av.llamadasTienda || 1} llamadas)</span>` : ''}
           ${av.codigoCliente ? `<span class="badge badge-blue">${escapeHtml(av.codigoCliente)}</span>` : ''}
           ${av.contratoMant ? `<span class="badge badge-green">🛡️ CONTRATO MANT. ACTIVO</span>` : ''}
           <span class="badge ${tratoColor}">Trato: ${escapeHtml(av.tratoCliente || 'BUENO')}</span>
         </h2>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
-          📍 ${escapeHtml(av.direccionCompleta)} · <strong>${av.kmIdaVuelta || 14} km I/V desde C/ Annapurna 22</strong> · Anotó: ${escapeHtml(av.anota || 'OFICINA')} (${escapeHtml(av.fecha)})
+        <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;">
+          📍 ${escapeHtml(av.direccionCompleta)} · <strong>${av.kmIdaVuelta || 14} km I/V desde C/ Annapurna 22</strong> · 📅 Entrada: <strong>${escapeHtml(formatDateES(av.fecha))}</strong> · Anotó: <strong>${escapeHtml(av.anota || 'OFICINA')}</strong>
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn ${isFuego ? 'btn-primary' : 'btn-ghost'}" style="${isFuego ? 'background:#dc2626;border-color:#b91c1c;' : ''}" onclick="quickUpdateAviso('${av.idAviso}', { esFuego: true, llamadasTienda: ${Number(av.llamadasTienda || 0) + 1} })" title="Marcar o sumar llamada insistente del cliente">
+          🔥 Rellamó (+1)
+        </button>
         <button class="btn btn-primary" onclick="openAgendarCitaModal('${av.idAviso}')">
           📅 Agendar Cita / Pareja
         </button>
@@ -524,7 +563,7 @@ async function selectAviso(idAviso) {
         <div style="font-size:11px;font-weight:800;color:#fb923c;text-transform:uppercase;margin-bottom:8px;">
           ⚡ Triaje Rápido en 1 Clic (Se guarda al instante sin recargar)
         </div>
-        <div class="form-grid" style="grid-template-columns: repeat(4, 1fr);">
+        <div class="form-grid triaje-grid-4" style="grid-template-columns: repeat(4, 1fr);">
           <div class="field">
             <label>Estado del Aviso (14 Estados)</label>
             <select onchange="quickUpdateAviso('${av.idAviso}', { estadoAviso: this.value })">
@@ -546,6 +585,7 @@ async function selectAviso(idAviso) {
               <option value="ALEX" ${av.operarioPreasignado === 'ALEX' ? 'selected' : ''}>🟢 ALEX</option>
               <option value="DIONI" ${av.operarioPreasignado === 'DIONI' ? 'selected' : ''}>🟠 DIONI</option>
               <option value="ROBERTO" ${av.operarioPreasignado === 'ROBERTO' ? 'selected' : ''}>🟣 ROBERTO</option>
+              <option value="ISMA" ${av.operarioPreasignado === 'ISMA' ? 'selected' : ''}>🟡 ISMA</option>
             </select>
           </div>
           <div class="field">
@@ -589,7 +629,7 @@ async function selectAviso(idAviso) {
           <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;font-weight:700;margin-bottom:6px;">🔥 Máquina, Contrato e Importe Acumulado</div>
           <p style="font-size:13px;margin-bottom:4px;"><strong>Equipo:</strong> ${escapeHtml(av.tipoAparato)} · <strong>${escapeHtml(av.marca)}</strong> ${escapeHtml(av.modelo)}</p>
           <p style="font-size:12.5px;margin-bottom:4px;color:var(--text);">
-            <strong>📅 Fecha Contrato / Compra:</strong> <span style="color:#fb923c;font-weight:700;">${escapeHtml(av.fechaInstalacion || 'No registrada')}</span>
+            <strong>📅 Fecha Contrato / Compra:</strong> <span style="color:#fb923c;font-weight:700;">${escapeHtml(formatDateES(av.fechaInstalacion))}</span>
             ${av.docCompra ? ` · <strong>📄 Nº Contrato:</strong> <span class="badge badge-blue">${escapeHtml(av.docCompra)}</span>` : ''}
             ${av.numSerie ? ` · <strong>🔢 Nº Serie:</strong> <code>${escapeHtml(av.numSerie)}</code>` : ''}
           </p>
@@ -1866,7 +1906,40 @@ async function submitCerrarFichaje() {
     if (confirm(`✅ ¡Parte cerrado correctamente y volcado al Aviso #${data.aviso ? data.aviso.numero : ''}!\n\n¿Deseas abrir el Parte de Trabajo Oficial en PDF para imprimir o enviar al cliente?`)) {
       window.open(withAuthToken(`/api/parte-pdf/${data.fichaje.idFichaje}`), '_blank');
     }
+
+    if (payload.tratoCliente === 'BUENO' && data.aviso) {
+      openGoogleReviewModal(data.aviso, payload.operario);
+    }
   }
+}
+
+function openGoogleReviewModal(aviso, operarioEmail) {
+  const reviewUrl = (state.bootstrap && state.bootstrap.googleReviewUrl) || 'https://www.google.com/search?q=Baza+Mazano+Valladolid';
+  const techShort = String(operarioEmail || '').split('@')[0].split('.')[0];
+  const techName = techShort ? techShort.charAt(0).toUpperCase() + techShort.slice(1) : 'nuestro técnico';
+  const cliente = `${aviso.nombreCliente || ''} ${aviso.apellidosCliente || ''}`.trim();
+
+  document.getElementById('revTelefono').value = aviso.telefono1 || '';
+  document.getElementById('revEmail').value = aviso.email || '';
+  document.getElementById('revMensajeTexto').value =
+    `Hola ${cliente || 'cliente'}, muchas gracias por confiar en *Baza Mazano S.L.* para el servicio técnico de su equipo.\n\n` +
+    `Si ha quedado satisfecho con la atención de ${techName}, nos ayudaría muchísimo que nos dejara su valoración en Google (solo 30 segundos):\n${reviewUrl}\n\n¡Gracias!`;
+  document.getElementById('modalResenaGoogle').classList.add('open');
+}
+
+function sendGoogleReviewWhatsapp() {
+  const tel = String(document.getElementById('revTelefono').value || '').replace(/\D/g, '');
+  const msg = document.getElementById('revMensajeTexto').value;
+  const cleanPhone = tel.startsWith('34') ? tel : (tel.length === 9 ? `34${tel}` : tel);
+  window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+  closeModal('modalResenaGoogle');
+}
+
+function sendGoogleReviewEmail() {
+  const email = document.getElementById('revEmail').value || '';
+  const msg = document.getElementById('revMensajeTexto').value;
+  window.open(`mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('¿Qué tal el servicio técnico de Baza Mazano?')}&body=${encodeURIComponent(msg)}`, '_blank');
+  closeModal('modalResenaGoogle');
 }
 
 // =========================================================================
@@ -1892,7 +1965,7 @@ function renderAdminKpis() {
       <div class="val" style="color:#fb923c;">${k.contratosCmPendientes}</div>
     </div>
     <div class="kpi-card" onclick="switchAdminTab('flota')">
-      <div class="label"><span>🚐 Flota (4 Furgonetas)</span><span>Gasto Acumulado</span></div>
+      <div class="label"><span>🚐 Flota (8 Vehículos)</span><span>Gasto Acumulado</span></div>
       <div class="val" style="color:#60a5fa;">${totalGastosFlota.toFixed(0)} €</div>
     </div>
   `;
@@ -2113,23 +2186,28 @@ async function renderAdminView() {
     `;
   } else if (state.adminTab === 'flota') {
     const gastos = (state.bootstrap && state.bootstrap.gastosVehiculos) || [];
-    const furgonetas = [
-      '9390HSV - DACIA DOKKER',
-      '7206GDH - OPEL VIVARO',
-      '7392DFX - CITRÖEN BERLINGO',
-      '4037NJX - FURGONETA SAT'
+    const vehiculos = (state.bootstrap && state.bootstrap.vehiculos) || [
+      '7206GDH - OPEL VIVARO COM6',
+      '0986FVB - MERCEDES SPRINTER 300 EXTRALARGA',
+      '9390HSV - DACIA DOKKER 1.5DCI',
+      '6572KPN - MERCEDES SPRINTER FURGON 311CDI',
+      '6772LPF - HONDA FORZA 750 (MOTO)',
+      '5823NBT - RENAULT RAFALE 1.2 E-TECH PHEV',
+      '4037NJX - RENAULT TRAFIC L1H1 BLUEDCI 130',
+      '9851MFL - RENAULT KANGOO E-TECH EV45'
     ];
-    const resumenPorFurgo = furgonetas.map(v => {
+    const resumenPorFurgo = vehiculos.map(v => {
       const clave = v.split(' ')[0];
       const regs = gastos.filter(g => String(g.vehiculo || '').includes(clave));
       const total = regs.reduce((s, r) => s + (Number(r.importe) || 0), 0);
       const maxKm = regs.reduce((m, r) => (r.kms > m ? r.kms : m), 0);
       return { nombre: v, count: regs.length, total, maxKm };
     });
+    const todayStr = new Date().toISOString().slice(0, 10);
 
     const el = document.getElementById('adminSectionFlota');
     el.innerHTML = `
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:12px;margin-bottom:16px;">
         ${resumenPorFurgo.map(f => `
           <div class="panel" style="padding:14px;">
             <div style="font-size:11px;color:var(--text-muted);font-weight:700;">🚐 ${escapeHtml(f.nombre)}</div>
@@ -2141,35 +2219,52 @@ async function renderAdminView() {
 
       <div class="panel">
         <div class="panel-header">
-          <h2>⛽ Registro Histórico y Alta de Gastos de Vehículos (` + '`GASTOS VEHÍCULOS`' + `)</h2>
+          <h2>⛽ Registro Histórico y Alta de Repostajes / Gastos (8 Vehículos + Ticket)</h2>
         </div>
         <div class="panel-body">
-          <form onsubmit="submitNuevoGastoVehiculo(event)" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px;background:var(--bg-surface);padding:12px;border-radius:10px;border:1px solid var(--border);">
+          <form onsubmit="submitNuevoGastoVehiculo(event)" class="flota-form-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;background:var(--bg-surface);padding:12px;border-radius:10px;border:1px solid var(--border);">
+            <input type="date" id="gvFecha" value="${todayStr}" required title="Fecha del ticket" />
+            <select id="gvOperario" required title="Operario que realiza el repostaje">
+              <option value="JACOBO">🔵 JACOBO</option>
+              <option value="ALEX">🟢 ALEX</option>
+              <option value="DIONI">🟠 DIONI</option>
+              <option value="ROBERTO">🟣 ROBERTO</option>
+              <option value="ISMA">🟡 ISMA</option>
+              <option value="LEANDRO">👔 LEANDRO</option>
+              <option value="OFICINA">🏢 OFICINA</option>
+            </select>
             <select id="gvVehiculo" required>
-              ${furgonetas.map(v => `<option value="${v}">${v}</option>`).join('')}
+              ${vehiculos.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('')}
             </select>
             <select id="gvConcepto">
-              <option value="GASOIL">⛽ GASOIL</option>
+              <option value="GASOIL">⛽ GASOIL / GASOLINA</option>
               <option value="TALLER / MANTENIMIENTO">🔧 TALLER / MANTENIMIENTO</option>
               <option value="ITV / SEGURO">📄 ITV / SEGURO</option>
             </select>
             <input type="number" id="gvKms" placeholder="Kilómetros marcador" required />
             <input type="number" step="0.01" id="gvImporte" placeholder="Importe (€)" required />
+            <label class="btn btn-ghost" style="cursor:pointer;justify-content:center;font-size:12px;">
+              📸 Foto Ticket
+              <input type="file" accept="image/*" style="display:none;" onchange="handleFlotaTicketCompress(event)" />
+            </label>
             <button type="submit" class="btn btn-primary">➕ Registrar Ticket</button>
           </form>
+          <div id="flotaPhotoInfo" style="font-size:11px;color:#34d399;margin:-8px 0 12px 2px;"></div>
 
           <table class="data-table">
             <thead>
-              <tr><th>Fecha</th><th>Furgoneta</th><th>Concepto</th><th>Kilómetros</th><th>Importe</th><th>Observaciones</th></tr>
+              <tr><th>Fecha</th><th>Operario</th><th>Vehículo</th><th>Concepto</th><th>Kilómetros</th><th>Importe</th><th>Ticket</th><th>Observaciones</th></tr>
             </thead>
             <tbody>
-              ${gastos.slice(0, 50).map(g => `
+              ${gastos.slice(0, 60).map(g => `
                 <tr>
-                  <td>${escapeHtml(g.fecha)}</td>
+                  <td>${escapeHtml(formatDateES(g.fecha))}</td>
+                  <td><span class="badge badge-amber">${escapeHtml(g.operario || 'N/D')}</span></td>
                   <td><strong>${escapeHtml(g.vehiculo)}</strong></td>
                   <td><span class="badge badge-blue">${escapeHtml(g.tipoGasto)}</span></td>
                   <td>${g.kms || '-'} km</td>
                   <td><strong style="color:#fb923c;">${Number(g.importe || 0).toFixed(2)} €</strong></td>
+                  <td>${g.fotoTicket ? `<a href="${withAuthToken(g.fotoTicket)}" target="_blank" class="badge badge-green" style="text-decoration:none;">📎 Ver Ticket</a>` : '-'}</td>
                   <td>${escapeHtml(g.observaciones || '')}</td>
                 </tr>
               `).join('')}
@@ -2289,13 +2384,39 @@ function onContratosSearch(query) {
   renderAdminView();
 }
 
+let flotaTicketDataUrl = '';
+function handleFlotaTicketCompress(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxW = 1000;
+      const scale = img.width > maxW ? (maxW / img.width) : 1;
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      flotaTicketDataUrl = canvas.toDataURL('image/webp', 0.72);
+      const info = document.getElementById('flotaPhotoInfo');
+      if (info) info.textContent = `✅ Ticket comprimido (${Math.round(flotaTicketDataUrl.length / 1024)} KB) listo para subir.`;
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
 async function submitNuevoGastoVehiculo(e) {
   e.preventDefault();
   const payload = {
+    fecha: document.getElementById('gvFecha') ? document.getElementById('gvFecha').value : '',
+    operario: document.getElementById('gvOperario') ? document.getElementById('gvOperario').value : 'OFICINA',
     vehiculo: document.getElementById('gvVehiculo').value,
     tipoGasto: document.getElementById('gvConcepto').value,
     kms: Number(document.getElementById('gvKms').value) || 0,
-    importe: Number(document.getElementById('gvImporte').value) || 0
+    importe: Number(document.getElementById('gvImporte').value) || 0,
+    fotoTicket: flotaTicketDataUrl
   };
   const res = await apiFetch('/api/vehiculos', {
     method: 'POST',
@@ -2303,6 +2424,7 @@ async function submitNuevoGastoVehiculo(e) {
     body: JSON.stringify(payload)
   });
   if ((await res.json()).ok) {
+    flotaTicketDataUrl = '';
     await loadBootstrap();
     renderAdminView();
   }
@@ -2313,6 +2435,13 @@ async function submitNuevoGastoVehiculo(e) {
 // =========================================================================
 function openNuevoAvisoModal() {
   document.getElementById('formNuevoAviso').reset();
+  if (state.authUser) {
+    const anotaSel = document.getElementById('newAnota');
+    const firstWord = String(state.authUser.nombre || '').split(' ')[0].toUpperCase();
+    if (anotaSel && Array.from(anotaSel.options).some(o => o.value === firstWord)) {
+      anotaSel.value = firstWord;
+    }
+  }
   document.getElementById('newCodigoCliente').value = 'NO ES CLIENTE';
   document.getElementById('intakeSearchClient').value = '';
   document.getElementById('intakeAutocompleteList').style.display = 'none';
@@ -2475,6 +2604,7 @@ async function submitNuevoAviso(e) {
     observacionesAliquo: document.getElementById('newObservacionesAliquo') ? document.getElementById('newObservacionesAliquo').value : '',
     tipoIntervencion: document.getElementById('newTipoIntervencion').value,
     prioridad: document.getElementById('newPrioridad').value,
+    esFuego: Boolean(document.getElementById('newEsFuego') && document.getElementById('newEsFuego').checked),
     contratoMant: document.getElementById('newContratoMant').value === 'true',
     anota: document.getElementById('newAnota').value,
     operarioPreasignado: document.getElementById('newOperarioPreasignado').value,

@@ -100,17 +100,28 @@ function getNextAvisoNumero() {
 const AUTH_SECRET = process.env.AUTH_SECRET || process.env.SAT_AUTH_SECRET || crypto.createHash('sha256').update('SAT_BAZA_2026_LAIBE_HMAC_KEY').digest('hex');
 
 const PIN_USERS = [
-  { id: 'juanpablo', nombre: 'Juan Pablo (Admin)', pin: process.env.PIN_ADMIN || '445215', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
-  { id: 'leandro', nombre: 'Leandro (Dirección)', pin: process.env.PIN_LEANDRO || '1347', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
-  { id: 'silvia', nombre: 'Silvia (Administración)', pin: process.env.PIN_SILVIA || '1010', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
-  { id: 'chus', nombre: 'Chus (Cuentas y Admin)', pin: process.env.PIN_CHUS || '2866', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, lockedTechEmail: null },
-  { id: 'jacobo', nombre: 'Jacobo (Jefe SAT)', pin: process.env.PIN_JACOBO || '9553', roles: ['mando', 'tecnico'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
-  { id: 'rosa', nombre: 'Rosa (Atención/Comercial)', pin: process.env.PIN_ROSA || '1601', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
-  { id: 'lidia', nombre: 'Lidia (SAT y Repuestos)', pin: process.env.PIN_LIDIA || '6272', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: null },
-  { id: 'alex', nombre: 'Alex (Técnico SAT)', pin: process.env.PIN_ALEX || '3102', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'alejandro.bazamazano@gmail.com' },
-  { id: 'dioni', nombre: 'Dioni (Técnico SAT)', pin: process.env.PIN_DIONI || '3204', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'dioni.bazamazano@gmail.com' },
-  { id: 'roberto', nombre: 'Roberto (Técnico SAT)', pin: process.env.PIN_ROBERTO || '3305', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'rober.bazamazano@gmail.com' },
-  { id: 'ismael', nombre: 'Ismael (Técnico SAT)', pin: process.env.PIN_ISMAEL || '3406', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, lockedTechEmail: 'isma.bazamazano@gmail.com' }
+  { id: 'juanpablo', nombre: 'Juan Pablo (Admin)', pin: process.env.PIN_ADMIN || '445215', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'leandro', nombre: 'Leandro (Dirección)', pin: process.env.PIN_LEANDRO || '1347', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'silvia', nombre: 'Silvia (Administración)', pin: process.env.PIN_SILVIA || '1010', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'chus', nombre: 'Chus (Cuentas y Admin)', pin: process.env.PIN_CHUS || '2866', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'jacobo', nombre: 'Jacobo (Jefe SAT)', pin: process.env.PIN_JACOBO || '9553', roles: ['mando', 'tecnico'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'rosa', nombre: 'Rosa (Atención/Comercial)', pin: process.env.PIN_ROSA || '1601', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'lidia', nombre: 'Lydia (SAT y Repuestos)', pin: process.env.PIN_LIDIA || '6272', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'alex', nombre: 'Alex (Técnico SAT)', pin: process.env.PIN_ALEX || '3102', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: 'alejandro.bazamazano@gmail.com' },
+  { id: 'dioni', nombre: 'Dioni (Técnico SAT)', pin: process.env.PIN_DIONI || '3204', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: false, lockedTechEmail: 'dioni.bazamazano@gmail.com' },
+  { id: 'roberto', nombre: 'Roberto (Técnico SAT)', pin: process.env.PIN_ROBERTO || '3305', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: false, lockedTechEmail: 'rober.bazamazano@gmail.com' },
+  { id: 'ismael', nombre: 'Isma (Técnico SAT)', pin: process.env.PIN_ISMAEL || '3406', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: false, lockedTechEmail: 'isma.bazamazano@gmail.com' }
+];
+
+const VEHICULOS_OFICIALES = [
+  '7206GDH - OPEL VIVARO COM6',
+  '0986FVB - MERCEDES SPRINTER 300 EXTRALARGA',
+  '9390HSV - DACIA DOKKER 1.5DCI',
+  '6572KPN - MERCEDES SPRINTER FURGON 311CDI',
+  '6772LPF - HONDA FORZA 750 (MOTO)',
+  '5823NBT - RENAULT RAFALE 1.2 E-TECH PHEV',
+  '4037NJX - RENAULT TRAFIC L1H1 BLUEDCI 130',
+  '9851MFL - RENAULT KANGOO E-TECH EV45'
 ];
 
 function signAuthToken(user) {
@@ -121,6 +132,7 @@ function signAuthToken(user) {
     defaultRole: user.defaultRole,
     canSeeAdmin: user.canSeeAdmin,
     canSeeNotasAdmin: user.canSeeNotasAdmin,
+    canCreateAviso: Boolean(user.canCreateAviso),
     lockedTechEmail: user.lockedTechEmail,
     exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 días de sesión en furgoneta/nave
   };
@@ -1183,6 +1195,7 @@ const server = http.createServer(async (req, res) => {
         defaultRole: user.defaultRole,
         canSeeAdmin: user.canSeeAdmin,
         canSeeNotasAdmin: user.canSeeNotasAdmin,
+        canCreateAviso: Boolean(user.canCreateAviso),
         lockedTechEmail: user.lockedTechEmail
       };
       return sendJson(res, 200, { ok: true, token, user: safeUser });
@@ -1290,6 +1303,8 @@ const server = http.createServer(async (req, res) => {
         operarios: db.operarios,
         marcas: db.marcas,
         repuestos: db.repuestos,
+        vehiculos: VEHICULOS_OFICIALES,
+        googleReviewUrl: process.env.GOOGLE_REVIEW_URL || 'https://www.google.com/search?q=Baza+Mazano+Valladolid+rese%C3%B1as',
         gastosVehiculos: db.gastosVehiculos,
         fichajesAbiertos
       });
@@ -1346,6 +1361,8 @@ const server = http.createServer(async (req, res) => {
       const estado = parsedUrl.searchParams.get('estado') || '';
       const q = (parsedUrl.searchParams.get('q') || '').trim().toLowerCase();
       const operario = (parsedUrl.searchParams.get('operario') || '').trim().toUpperCase();
+      const prioridad = (parsedUrl.searchParams.get('prioridad') || '').trim().toUpperCase();
+      const sort = (parsedUrl.searchParams.get('sort') || 'newest').trim().toLowerCase();
       const limit = Math.min(500, parseInt(parsedUrl.searchParams.get('limit') || '150', 10));
 
       let list = db.avisos;
@@ -1365,6 +1382,13 @@ const server = http.createServer(async (req, res) => {
       if (operario && operario !== 'TODOS') {
         list = list.filter(a => String(a.operarioPreasignado || '').toUpperCase().includes(operario));
       }
+      if (prioridad && prioridad !== 'TODAS') {
+        if (prioridad === 'FUEGO') {
+          list = list.filter(a => Boolean(a.esFuego) || Number(a.llamadasTienda || 0) > 0);
+        } else {
+          list = list.filter(a => String(a.prioridad || 'MEDIA').toUpperCase() === prioridad);
+        }
+      }
       if (q) {
         list = list.filter(a =>
           String(a.numero).includes(q) ||
@@ -1380,6 +1404,25 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
+      if (sort === 'oldest' || sort === 'newest' || sort === 'priority') {
+        const toTime = (s) => {
+          if (!s) return 0;
+          const norm = String(s).includes('T') ? String(s) : String(s).replace(' ', 'T');
+          const t = Date.parse(norm);
+          return Number.isNaN(t) ? 0 : t;
+        };
+        const prioWeight = (a) => {
+          const fuego = (a.esFuego || Number(a.llamadasTienda || 0) > 0) ? 10 : 0;
+          const p = String(a.prioridad || 'MEDIA').toUpperCase();
+          return fuego + (p === 'ALTA' ? 3 : p === 'MEDIA' ? 2 : 1);
+        };
+        list = [...list].sort((a, b) => {
+          if (sort === 'oldest') return toTime(a.fecha) - toTime(b.fecha) || (a.numero - b.numero);
+          if (sort === 'priority') return (prioWeight(b) - prioWeight(a)) || (toTime(a.fecha) - toTime(b.fecha));
+          return toTime(b.fecha) - toTime(a.fecha) || (b.numero - a.numero);
+        });
+      }
+
       return sendJson(res, 200, {
         ok: true,
         total: list.length,
@@ -1389,6 +1432,9 @@ const server = http.createServer(async (req, res) => {
 
     // 4. CREAR NUEVO AVISO (Alta Express 15s con numerador atómico MAX + 1)
     if (pathname === '/api/avisos' && req.method === 'POST') {
+      if (!authUser.canCreateAviso) {
+        return sendJson(res, 403, { ok: false, error: 'Tu usuario no tiene permiso para crear nuevos avisos.' });
+      }
       const body = await readJsonBody(req);
       const nuevoNumero = getNextAvisoNumero();
       const idAviso = crypto.randomBytes(4).toString('hex');
@@ -1455,8 +1501,10 @@ const server = http.createServer(async (req, res) => {
         tratoCliente: String(body.tratoCliente || 'BUENO').trim(),
         horariosDisponibles: String(body.horariosDisponibles || 'MAÑANAS O TARDES').trim(),
         prioridad: String(body.prioridad || 'MEDIA').trim(),
+        esFuego: Boolean(body.esFuego),
+        llamadasTienda: Number(body.llamadasTienda) || (body.esFuego ? 1 : 0),
         tipoIntervencion: String(body.tipoIntervencion || 'SAT NORMAL').trim(),
-        estadoAviso: String(body.estadoAviso || 'SIN PROCESAR').trim(),
+        estadoAviso: authUser.lockedTechEmail ? 'SIN PROCESAR' : String(body.estadoAviso || 'SIN PROCESAR').trim(),
         operarioPreasignado: String(body.operarioPreasignado || 'JACOBO').trim(),
         notasFichajes: '',
         sumaImportes: 0
@@ -1475,7 +1523,7 @@ const server = http.createServer(async (req, res) => {
       if (!aviso) return sendJson(res, 404, { ok: false, error: 'Aviso no encontrado' });
 
       const allowed = [
-        'estadoAviso', 'prioridad', 'tratoCliente', 'operarioPreasignado',
+        'estadoAviso', 'prioridad', 'esFuego', 'llamadasTienda', 'tratoCliente', 'operarioPreasignado',
         'tipoIntervencion', 'observaciones', 'horariosDisponibles', 'marca',
         'modelo', 'tipoAparato', 'contratoMant', 'codigoCliente', 'telefono1',
         'direccionCompleta', 'sumaImportes', 'notasFichajes', 'kmIdaVuelta',
@@ -2052,18 +2100,21 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, activadosCount: creados.length, avisosCreados: creados });
     }
 
-    // 11. CONTROL DE FLOTA (4 FURGONETAS: 9390HSV, 7206GDH, 7392DFX, 4037NJX)
+    // 11. CONTROL DE FLOTA (8 VEHÍCULOS OFICIALES + TICKET CON FOTO)
     if (pathname === '/api/vehiculos' && req.method === 'POST') {
       const body = await readJsonBody(req);
+      const idGasto = crypto.randomBytes(4).toString('hex');
+      const fotoTicket = persistMediaDataUrl(body.fotoTicket || '', 'flota', `${idGasto}_ticket`);
       const nuevoGasto = {
-        idGasto: crypto.randomBytes(4).toString('hex'),
-        fecha: body.fecha || new Date().toISOString().slice(0, 10),
-        vehiculo: String(body.vehiculo || '9390HSV - DACIA DOKKER'),
+        idGasto,
+        fecha: String(body.fecha || nowMadridStr().slice(0, 10)).slice(0, 10),
+        operario: String(body.operario || authUser.nombre || 'OFICINA').trim().toUpperCase(),
+        vehiculo: String(body.vehiculo || VEHICULOS_OFICIALES[0]),
         tipoGasto: String(body.tipoGasto || 'GASOIL').toUpperCase(),
         kms: Number(body.kms) || 0,
         importe: Number(body.importe) || 0,
         observaciones: String(body.observaciones || '').trim(),
-        fotoTicket: ''
+        fotoTicket
       };
       db.gastosVehiculos.unshift(nuevoGasto);
       saveDb();

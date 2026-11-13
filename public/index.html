@@ -6,7 +6,7 @@
   <title>SAT Baza Mazano 2.0 (2026/2027) — Sistema Operativo SAT & Aliquo SQL</title>
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/styles.css?v=20261112a" />
+  <link rel="stylesheet" href="/styles.css?v=20261113a" />
   <script>
     (function() {
       try {
@@ -92,7 +92,7 @@
         <option value="2026">📋 Tarifas 2026 (Vigente)</option>
         <option value="2027">🚀 Tarifas 2027 (Cargadas)</option>
       </select>
-      <button class="btn btn-primary" onclick="openNuevoAvisoModal()">
+      <button class="btn btn-primary" id="btnNuevoAvisoExpress" onclick="openNuevoAvisoModal()">
         ➕ Nuevo Aviso Express (15s)
       </button>
     </div>
@@ -123,7 +123,8 @@
         </button>
       </div>
 
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <div class="mando-filters-bar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
+        <input type="search" id="searchAvisosInput" placeholder="🔍 Buscar nº aviso, VA, cliente, pueblo, marca..." oninput="debounceLoadAvisos()" style="flex:1;min-width:240px;" />
         <select id="filterEstadoAviso" onchange="loadAvisosList()">
           <option value="SIN PROCESAR">🔴 SIN PROCESAR (Triaje Prioritario)</option>
           <option value="REALIZABLE">🟢 REALIZABLE (Listos para agendar)</option>
@@ -131,7 +132,19 @@
           <option value="MATERIALES">📦 MATERIALES / PRESUPUESTO</option>
           <option value="NUEVA CITA">🔁 NUEVA CITA (2ª Visita)</option>
           <option value="FINALIZADO, PASAR ALIQUO">🟣 FINALIZADO, PASAR ALIQUO</option>
-          <option value="TODOS">📚 TODOS LOS AVISOS (2.027)</option>
+          <option value="TODOS">📚 TODOS LOS AVISOS</option>
+        </select>
+        <select id="filterPrioridadAviso" onchange="loadAvisosList()" title="Filtrar por Prioridad">
+          <option value="TODAS">🚦 Todas las Prioridades</option>
+          <option value="FUEGO">🔥 FUEGO (Rellamó Cliente)</option>
+          <option value="ALTA">🔴 Prioridad ALTA</option>
+          <option value="MEDIA">🟡 Prioridad MEDIA</option>
+          <option value="BAJA">🔵 Prioridad BAJA</option>
+        </select>
+        <select id="sortAvisosOrder" onchange="loadAvisosList()" title="Ordenar Avisos por Fecha">
+          <option value="newest">📅 Más recientes primero</option>
+          <option value="oldest">⏳ Más antiguos primero (espera)</option>
+          <option value="priority">🔥 Urgencia + Fuego primero</option>
         </select>
         <select id="filterOperarioAviso" onchange="loadAvisosList()">
           <option value="TODOS">👷 Todos los Operarios</option>
@@ -139,8 +152,8 @@
           <option value="ALEX">🟢 ALEX</option>
           <option value="DIONI">🟠 DIONI</option>
           <option value="ROBERTO">🟣 ROBERTO</option>
+          <option value="ISMA">🟡 ISMA</option>
         </select>
-        <input type="search" id="searchAvisosInput" placeholder="🔍 Buscar nº aviso, VA, cliente, pueblo, marca..." oninput="debounceLoadAvisos()" style="min-width:250px;" />
       </div>
     </div>
 
@@ -399,6 +412,9 @@
                 <option value="MIXTA PELLET-LEÑA">MIXTA PELLET-LEÑA</option>
                 <option value="GAS">GAS</option>
                 <option value="AEROTERMIA">AEROTERMIA</option>
+                <option value="BIOETANOL">BIOETANOL</option>
+                <option value="ELÉCTRICAS">ELÉCTRICAS</option>
+                <option value="VAPOR DE AGUA">VAPOR DE AGUA</option>
               </select>
             </div>
             <div class="field">
@@ -446,10 +462,14 @@
             <div class="field">
               <label>Prioridad</label>
               <select id="newPrioridad">
-                <option value="MEDIA">MEDIA</option>
+                <option value="MEDIA">🟡 MEDIA</option>
                 <option value="ALTA">🔴 ALTA (Urgente / Parada)</option>
-                <option value="BAJA">BAJA</option>
+                <option value="BAJA">🔵 BAJA (Normal)</option>
               </select>
+              <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11.5px;color:#f87171;cursor:pointer;text-transform:none;">
+                <input type="checkbox" id="newEsFuego" />
+                🔥 Fuego (Cliente ha llamado varias veces)
+              </label>
             </div>
             <div class="field">
               <label>¿Tiene Contrato Mant. Activo?</label>
@@ -459,14 +479,16 @@
               </select>
             </div>
             <div class="field">
-              <label>Anota (Recepción / Mando)</label>
+              <label>Anota (Recepción / Mando / Campo)</label>
               <select id="newAnota">
                 <option value="JACOBO">JACOBO</option>
                 <option value="LEANDRO">LEANDRO</option>
                 <option value="SILVIA">SILVIA</option>
-                <option value="LIDIA">LIDIA</option>
-                <option value="MARIVÍ">MARIVÍ</option>
+                <option value="CHUS">CHUS</option>
+                <option value="LYDIA">LYDIA</option>
                 <option value="ROSA">ROSA</option>
+                <option value="ALEX">ALEX</option>
+                <option value="ROBERTO">ROBERTO</option>
               </select>
             </div>
             <div class="field">
@@ -476,6 +498,7 @@
                 <option value="ALEX">ALEX</option>
                 <option value="DIONI">DIONI</option>
                 <option value="ROBERTO">ROBERTO</option>
+                <option value="ISMA">ISMA</option>
               </select>
             </div>
             <div class="field" id="newObservacionesAliquoWrap" style="grid-column: 1 / -1; display:none;">
@@ -545,6 +568,9 @@
                 </label>
                 <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);cursor:pointer;">
                   <input type="checkbox" name="citaAsistenteChk" value="rober.bazamazano@gmail.com" /> 🟣 ROBERTO
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);cursor:pointer;">
+                  <input type="checkbox" name="citaAsistenteChk" value="isma.bazamazano@gmail.com" /> 🟡 ISMA
                 </label>
               </div>
             </div>
@@ -788,7 +814,35 @@
     </div>
   </div>
 
+  <!-- =================================================================== -->
+  <!-- MODAL 6: SOLICITAR RESEÑA GOOGLE AL CLIENTE SATISFECHO (FASE 1.5A)  -->
+  <!-- =================================================================== -->
+  <div class="modal-backdrop" id="modalResenaGoogle">
+    <div class="modal-card" style="max-width:540px;">
+      <div class="panel-header">
+        <h2>⭐ Solicitar Reseña de Google al Cliente</h2>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modalResenaGoogle')">✕</button>
+      </div>
+      <div class="panel-body">
+        <input type="hidden" id="revTelefono" />
+        <input type="hidden" id="revEmail" />
+        <p style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;">
+          El cliente ha quedado satisfecho. Puedes enviarle el enlace directo para valorar el trabajo en Google (opcional):
+        </p>
+        <div class="field" style="margin-bottom:14px;">
+          <label>Mensaje preparado para el Cliente</label>
+          <textarea id="revMensajeTexto" rows="5"></textarea>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-ghost" onclick="closeModal('modalResenaGoogle')">Omitir</button>
+          <button type="button" class="btn btn-blue" onclick="sendGoogleReviewEmail()">📧 Enviar por Email</button>
+          <button type="button" class="btn btn-green" onclick="sendGoogleReviewWhatsapp()">📲 Enviar por WhatsApp</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/app.js?v=20261112a"></script>
+  <script src="/app.js?v=20261113a"></script>
 </body>
 </html>
