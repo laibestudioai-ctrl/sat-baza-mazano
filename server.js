@@ -59,6 +59,228 @@ function nowMadridStr(ms = Date.now()) {
   }
 }
 
+function addDaysMadridDate(days = 7, baseMs = Date.now()) {
+  return nowMadridStr(baseMs + days * 86400000).slice(0, 10);
+}
+
+function isEstadoFinalizado(estado) {
+  const s = String(estado || '').toUpperCase();
+  return (
+    s.includes('FINALIZADO') ||
+    s.includes('CANCELAD') ||
+    s.includes('CERRAD') ||
+    s.includes('ANULAD') ||
+    s.includes('PASAR ALIQUO') ||
+    s.includes('FACTURAD')
+  );
+}
+
+function diffDaysFromToday(dateStr) {
+  if (!dateStr) return null;
+  const clean = String(dateStr).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return null;
+  const todayStr = nowMadridStr().slice(0, 10);
+  const t1 = Date.parse(todayStr + 'T00:00:00Z');
+  const t2 = Date.parse(clean + 'T00:00:00Z');
+  if (Number.isNaN(t1) || Number.isNaN(t2)) return null;
+  return Math.round((t2 - t1) / 86400000);
+}
+
+function summarizeAvisoAlerta(a, extra = {}) {
+  return {
+    idAviso: a.idAviso,
+    numero: a.numero,
+    fecha: a.fecha || '',
+    nombreCliente: a.nombreCliente || '',
+    apellidosCliente: a.apellidosCliente || '',
+    telefono1: a.telefono1 || '',
+    poblacion: a.poblacion || '',
+    marca: a.marca || '',
+    modelo: a.modelo || '',
+    docCompra: a.docCompra || '',
+    estadoAviso: a.estadoAviso || '',
+    tipoIntervencion: a.tipoIntervencion || '',
+    esContratoObra: Boolean(a.esContratoObra),
+    modalidadLogistica: a.modalidadLogistica || 'INSTALACION',
+    pago50Verificado: Boolean(a.pago50Verificado),
+    pedidoProveedorEstado: a.pedidoProveedorEstado || 'NO_APLICA',
+    rematePendiente: Boolean(a.rematePendiente),
+    remateFechaLimite: a.remateFechaLimite || '',
+    ...extra
+  };
+}
+
+function buildHistoricoRows(searchParams, authUser, maxRows = 200) {
+  const q = (searchParams.get('q') || '').trim().toLowerCase();
+  const estado = (searchParams.get('estado') || 'TODOS').trim().toUpperCase();
+  const operario = (searchParams.get('operario') || 'TODOS').trim().toUpperCase();
+  const tipoServicio = (searchParams.get('tipoServicio') || 'TODOS').trim().toUpperCase();
+  const desde = (searchParams.get('desde') || '').trim().slice(0, 10);
+  const hasta = (searchParams.get('hasta') || '').trim().slice(0, 10);
+
+  const repByCode = new Map();
+  for (const r of (db.repuestos || [])) {
+    if (r.codigo) repByCode.set(String(r.codigo).toUpperCase(), r);
+    if (r.idArticulo) repByCode.set(String(r.idArticulo).toUpperCase(), r);
+  }
+
+  const fichajesByAviso = new Map();
+  for (const f of (db.fichajes || [])) {
+    if (!f.idAviso) continue;
+    const arr = fichajesByAviso.get(f.idAviso) || [];
+    arr.push(f);
+    fichajesByAviso.set(f.idAviso, arr);
+  }
+
+  let list = Array.isArray(db.avisos) ? db.avisos : [];
+  if (authUser && authUser.lockedTechEmail) {
+    const techTag = String(authUser.lockedTechEmail).split('@')[0].split('.')[0].toUpperCase();
+    list = list.filter(a => String(a.operarioPreasignado || '').toUpperCase().includes(techTag));
+  }
+
+  const rows = [];
+  for (const a of list) {
+    const tServ = String(a.tipoServicio || 'SAT').toUpperCase() === 'MONTAJE_GOTERA' ? 'MONTAJE_GOTERA' : 'SAT';
+    if (tipoServicio !== 'TODOS' && tServ !== tipoServicio) continue;
+
+    const stUpper = String(a.estadoAviso || 'SIN PROCESAR').toUpperCase();
+    if (estado === 'PENDIENTES' && isEstadoFinalizado(stUpper)) continue;
+    else if (estado === 'FINALIZADOS' && !isEstadoFinalizado(stUpper)) continue;
+    else if (estado !== 'TODOS' && estado !== 'PENDIENTES' && estado !== 'FINALIZADOS' && stUpper !== estado) continue;
+
+    const fechaIn = String(a.fecha || '').slice(0, 10);
+    if (desde && fechaIn && fechaIn < desde) continue;
+    if (hasta && fechaIn && fechaIn > hasta) continue;
+
+    const fList = fichajesByAviso.get(a.idAviso) || [];
+    const lastF = fList[0] || null;
+    const opStr = (lastF && lastF.operario ? String(lastF.operario).split('@')[0] : (a.operarioPreasignado || 'JACOBO')).toUpperCase();
+    if (operario !== 'TODOS' && !opStr.includes(operario) && !String(a.operarioPreasignado || '').toUpperCase().includes(operario)) continue;
+
+    if (q) {
+      const hay = [
+        a.numero, a.codigoCliente, a.nombreCliente, a.apellidosCliente,
+        a.telefono1, a.poblacion, a.marca, a.modelo, a.observaciones, a.notasFichajes
+      ].map(v => String(v || '').toLowerCase()).join(' ');
+      if (!hay.includes(q)) continue;
+    }
+
+    let costeNetoRepuestos = 0;
+    let pvpRepuestos = 0;
+    const repParts = [];
+    for (const f of fList) {
+      for (const r of (Array.isArray(f.repuestosUsados) ? f.repuestosUsados : [])) {
+        const qty = Number(r.cantidad || 1) || 1;
+        const pvpUnit = Number(r.pvp ?? r.precio ?? 0) || 0;
+        const cat = repByCode.get(String(r.codigo || '').toUpperCase()) || repByCode.get(String(r.idArticulo || '').toUpperCase());
+        const netoUnit = Number(r.precioNeto ?? (cat ? cat.precioNeto : 0)) || 0;
+        pvpRepuestos += pvpUnit * qty;
+        costeNetoRepuestos += netoUnit * qty;
+        repParts.push(`${qty}x ${r.descripcion || r.codigo || 'Repuesto'} (${pvpUnit.toFixed(2)}€)`);
+      }
+    }
+
+    const totalFacturado = Number(a.sumaImportes || fList.reduce((s, f) => s + (Number(f.totalCobrado || f.importeTotal || 0)), 0)) || 0;
+    const canCostes = Boolean(authUser && authUser.canSeeCostes);
+
+    rows.push({
+      idAviso: a.idAviso,
+      numero: a.numero,
+      fechaEntrada: a.fecha || '',
+      fechaEjecucion: lastF ? (lastF.fin || lastF.inicio || '') : '',
+      tipoServicio: tServ,
+      estadoAviso: a.estadoAviso || 'SIN PROCESAR',
+      codigoCliente: a.codigoCliente || '',
+      clienteNombre: `${a.nombreCliente || ''} ${a.apellidosCliente || ''}`.trim(),
+      poblacion: a.poblacion || '',
+      maquina: `${a.tipoAparato || ''} ${a.marca || ''} ${a.modelo || ''}`.trim(),
+      tipoIntervencion: a.tipoIntervencion || 'SAT NORMAL',
+      operario: opStr,
+      precioComunicado: a.precioComunicado !== undefined && a.precioComunicado !== null ? Number(a.precioComunicado) : null,
+      importeAbonadoPrevio: Number(a.importeAbonadoPrevio || 0),
+      estadoCobroPrevio: a.estadoCobroPrevio || 'PENDIENTE',
+      metodoPagoPrevio: a.metodoPagoPrevio || '',
+      fechaPagoPrevio: a.fechaPagoPrevio || '',
+      totalFacturado: Number(totalFacturado.toFixed(2)),
+      pvpRepuestos: Number(pvpRepuestos.toFixed(2)),
+      costeNetoRepuestos: canCostes ? Number(costeNetoRepuestos.toFixed(2)) : null,
+      margenRepuestos: canCostes ? Number((pvpRepuestos - costeNetoRepuestos).toFixed(2)) : null,
+      formaCobro: lastF ? (lastF.formaCobro || '') : '',
+      estadoCobro: lastF ? (lastF.estadoCobro || (lastF.cobrado ? 'COBRADO' : 'PENDIENTE')) : (a.estadoCobroPrevio || 'PENDIENTE'),
+      repuestosTexto: repParts.join(' | '),
+      observaciones: a.observaciones || '',
+      notasTecnico: fList.map(f => f.trabajosRealizados || '').filter(Boolean).join(' / ') || a.notasFichajes || ''
+    });
+  }
+
+  return {
+    total: rows.length,
+    rows: rows.slice(0, maxRows)
+  };
+}
+
+function computeBuzonAlertas() {
+  const avisos = Array.isArray(db.avisos) ? db.avisos : [];
+  const citas = Array.isArray(db.citas) ? db.citas : [];
+
+  const avisosConCita = new Set();
+  for (const c of citas) {
+    if (c.enCalendario === false) continue;
+    if (c.idAviso) avisosConCita.add(String(c.idAviso));
+    if (c.avisoNumero) avisosConCita.add(String(c.avisoNumero));
+  }
+
+  const sinPlanningAll = [];
+  const pendienteSenal50All = [];
+  const pedidosProveedorAll = [];
+  const rematesUrgentesAll = [];
+
+  for (const a of avisos) {
+    const st = String(a.estadoAviso || '').toUpperCase().trim();
+    const finalizado = isEstadoFinalizado(st);
+    const tipoInt = String(a.tipoIntervencion || '').toUpperCase();
+    const esContrato = Boolean(a.esContratoObra);
+    const modalidad = String(a.modalidadLogistica || 'INSTALACION').toUpperCase();
+    const tieneCita = avisosConCita.has(String(a.idAviso)) || avisosConCita.has(String(a.numero));
+
+    if (!finalizado && (esContrato || tipoInt.includes('INSTALACI') || tipoInt.includes('MONTAJE')) && modalidad !== 'ENVIO_ALMACEN' && !tieneCita) {
+      sinPlanningAll.push(summarizeAvisoAlerta(a));
+    }
+
+    if (!finalizado && esContrato && !a.pago50Verificado) {
+      pendienteSenal50All.push(summarizeAvisoAlerta(a));
+    }
+
+    if (a.pedidoProveedorEstado === 'PENDIENTE' || st === 'PENDIENTE PEDIR MATERIAL/REPUESTO' || st === 'PEDIR MATERIAL') {
+      pedidosProveedorAll.push(summarizeAvisoAlerta(a));
+    }
+
+    if (!finalizado && (a.rematePendiente === true || st === 'NUEVA CITA')) {
+      const diasRestantes = diffDaysFromToday(a.remateFechaLimite);
+      rematesUrgentesAll.push(summarizeAvisoAlerta(a, { diasRestantes }));
+    }
+  }
+
+  rematesUrgentesAll.sort((x, y) => {
+    const dx = x.diasRestantes === null ? 999 : x.diasRestantes;
+    const dy = y.diasRestantes === null ? 999 : y.diasRestantes;
+    return dx - dy;
+  });
+
+  return {
+    counts: {
+      sinPlanning: sinPlanningAll.length,
+      pendienteSenal50: pendienteSenal50All.length,
+      pedidosProveedor: pedidosProveedorAll.length,
+      rematesUrgentes: rematesUrgentesAll.length
+    },
+    sinPlanning: sinPlanningAll.slice(0, 50),
+    pendienteSenal50: pendienteSenal50All.slice(0, 50),
+    pedidosProveedor: pedidosProveedorAll.slice(0, 50),
+    rematesUrgentes: rematesUrgentesAll.slice(0, 50)
+  };
+}
+
 function escapeHtmlServer(str) {
   return String(str || '')
     .replace(/&/g, '&amp;')
@@ -100,17 +322,17 @@ function getNextAvisoNumero() {
 const AUTH_SECRET = process.env.AUTH_SECRET || process.env.SAT_AUTH_SECRET || crypto.createHash('sha256').update('SAT_BAZA_2026_LAIBE_HMAC_KEY').digest('hex');
 
 const PIN_USERS = [
-  { id: 'juanpablo', nombre: 'Juan Pablo (Admin)', pin: process.env.PIN_ADMIN || '445215', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
-  { id: 'leandro', nombre: 'Leandro (Dirección)', pin: process.env.PIN_LEANDRO || '1347', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
-  { id: 'silvia', nombre: 'Silvia (Administración)', pin: process.env.PIN_SILVIA || '1010', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
-  { id: 'chus', nombre: 'Chus (Cuentas y Admin)', pin: process.env.PIN_CHUS || '2866', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, canCreateAviso: true, lockedTechEmail: null },
-  { id: 'jacobo', nombre: 'Jacobo (Jefe SAT)', pin: process.env.PIN_JACOBO || '9553', roles: ['mando', 'tecnico'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: null },
-  { id: 'rosa', nombre: 'Rosa (Atención/Comercial)', pin: process.env.PIN_ROSA || '1601', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: null },
-  { id: 'lidia', nombre: 'Lydia (SAT y Repuestos)', pin: process.env.PIN_LIDIA || '6272', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: null },
-  { id: 'alex', nombre: 'Alex (Técnico SAT)', pin: process.env.PIN_ALEX || '3102', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: true, lockedTechEmail: 'alejandro.bazamazano@gmail.com' },
-  { id: 'dioni', nombre: 'Dioni (Técnico SAT)', pin: process.env.PIN_DIONI || '3204', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: false, lockedTechEmail: 'dioni.bazamazano@gmail.com' },
-  { id: 'roberto', nombre: 'Roberto (Técnico SAT)', pin: process.env.PIN_ROBERTO || '3305', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: false, lockedTechEmail: 'rober.bazamazano@gmail.com' },
-  { id: 'ismael', nombre: 'Isma (Técnico SAT)', pin: process.env.PIN_ISMAEL || '3406', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canCreateAviso: false, lockedTechEmail: 'isma.bazamazano@gmail.com' }
+  { id: 'juanpablo', nombre: 'Juan Pablo (Admin)', pin: process.env.PIN_ADMIN || '445215', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, canSeeCostes: true, canEditTarifas: true, canExportContable: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'leandro', nombre: 'Leandro (Dirección)', pin: process.env.PIN_LEANDRO || '1347', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'mando', canSeeAdmin: true, canSeeNotasAdmin: true, canSeeCostes: true, canEditTarifas: true, canExportContable: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'silvia', nombre: 'Silvia (Administración)', pin: process.env.PIN_SILVIA || '1010', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, canSeeCostes: true, canEditTarifas: true, canExportContable: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'chus', nombre: 'Chus (Cuentas y Admin)', pin: process.env.PIN_CHUS || '2866', roles: ['mando', 'tecnico', 'admin'], defaultRole: 'admin', canSeeAdmin: true, canSeeNotasAdmin: true, canSeeCostes: true, canEditTarifas: true, canExportContable: true, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'jacobo', nombre: 'Jacobo (Jefe SAT)', pin: process.env.PIN_JACOBO || '9553', roles: ['mando', 'tecnico'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canSeeCostes: false, canEditTarifas: false, canExportContable: false, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'rosa', nombre: 'Rosa (Atención/Comercial)', pin: process.env.PIN_ROSA || '1601', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canSeeCostes: false, canEditTarifas: false, canExportContable: false, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'lidia', nombre: 'Lydia (SAT y Repuestos)', pin: process.env.PIN_LIDIA || '6272', roles: ['mando'], defaultRole: 'mando', canSeeAdmin: false, canSeeNotasAdmin: false, canSeeCostes: false, canEditTarifas: false, canExportContable: false, canCreateAviso: true, lockedTechEmail: null },
+  { id: 'alex', nombre: 'Alex (Técnico SAT)', pin: process.env.PIN_ALEX || '3102', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canSeeCostes: false, canEditTarifas: false, canExportContable: false, canCreateAviso: true, lockedTechEmail: 'alejandro.bazamazano@gmail.com' },
+  { id: 'dioni', nombre: 'Dioni (Técnico SAT)', pin: process.env.PIN_DIONI || '3204', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canSeeCostes: false, canEditTarifas: false, canExportContable: false, canCreateAviso: false, lockedTechEmail: 'dioni.bazamazano@gmail.com' },
+  { id: 'roberto', nombre: 'Roberto (Técnico SAT)', pin: process.env.PIN_ROBERTO || '3305', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canSeeCostes: false, canEditTarifas: false, canExportContable: false, canCreateAviso: false, lockedTechEmail: 'rober.bazamazano@gmail.com' },
+  { id: 'ismael', nombre: 'Isma (Técnico SAT)', pin: process.env.PIN_ISMAEL || '3406', roles: ['tecnico'], defaultRole: 'tecnico', canSeeAdmin: false, canSeeNotasAdmin: false, canSeeCostes: false, canEditTarifas: false, canExportContable: false, canCreateAviso: false, lockedTechEmail: 'isma.bazamazano@gmail.com' }
 ];
 
 const VEHICULOS_OFICIALES = [
@@ -130,8 +352,11 @@ function signAuthToken(user) {
     nombre: user.nombre,
     roles: user.roles,
     defaultRole: user.defaultRole,
-    canSeeAdmin: user.canSeeAdmin,
-    canSeeNotasAdmin: user.canSeeNotasAdmin,
+    canSeeAdmin: Boolean(user.canSeeAdmin),
+    canSeeNotasAdmin: Boolean(user.canSeeNotasAdmin),
+    canSeeCostes: Boolean(user.canSeeCostes),
+    canEditTarifas: Boolean(user.canEditTarifas),
+    canExportContable: Boolean(user.canExportContable),
     canCreateAviso: Boolean(user.canCreateAviso),
     lockedTechEmail: user.lockedTechEmail,
     exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 días de sesión en furgoneta/nave
@@ -1193,8 +1418,11 @@ const server = http.createServer(async (req, res) => {
         nombre: user.nombre,
         roles: user.roles,
         defaultRole: user.defaultRole,
-        canSeeAdmin: user.canSeeAdmin,
-        canSeeNotasAdmin: user.canSeeNotasAdmin,
+        canSeeAdmin: Boolean(user.canSeeAdmin),
+        canSeeNotasAdmin: Boolean(user.canSeeNotasAdmin),
+        canSeeCostes: Boolean(user.canSeeCostes),
+        canEditTarifas: Boolean(user.canEditTarifas),
+        canExportContable: Boolean(user.canExportContable),
         canCreateAviso: Boolean(user.canCreateAviso),
         lockedTechEmail: user.lockedTechEmail
       };
@@ -1245,6 +1473,46 @@ const server = http.createServer(async (req, res) => {
       if (isAdminRoute && !authUser.canSeeAdmin) {
         return sendJson(res, 403, { ok: false, code: 'FORBIDDEN_ADMIN', error: 'Acceso restringido a Dirección / Administración (Silvia, Chus, Leandro).' });
       }
+      if ((pathname === '/api/tarifas' || pathname === '/api/repuestos' || pathname === '/api/marcas') && !authUser.canEditTarifas) {
+        return sendJson(res, 403, { ok: false, code: 'FORBIDDEN_TARIFAS', error: 'Tu usuario no tiene permiso para modificar tarifas, marcas o repuestos.' });
+      }
+      if (pathname === '/api/admin/export-contable' && !authUser.canExportContable) {
+        return sendJson(res, 403, { ok: false, code: 'FORBIDDEN_CONTABLE', error: 'Exportación contable restringida a usuarios autorizados (Silvia, Chus, Leandro, Juan Pablo).' });
+      }
+    }
+
+    // Exportación Contable Oficial (CSV UTF-8 con BOM ';' para Excel España — Fase 1.5B)
+    if (pathname === '/api/admin/export-contable' && req.method === 'GET') {
+      const { rows } = buildHistoricoRows(parsedUrl.searchParams, authUser, 5000);
+      const csvEsc = (v) => {
+        const s = String(v === null || v === undefined ? '' : v).replace(/\r?\n/g, ' ');
+        return `"${s.replace(/"/g, '""')}"`;
+      };
+      const numEs = (n) => Number(n || 0).toFixed(2).replace('.', ',');
+      const header = [
+        'Nº Aviso', 'Fecha Entrada', 'Fecha Ejecución', 'Tipo Servicio', 'Estado Aviso',
+        'Código Cliente', 'Cliente', 'Población', 'Máquina', 'Tipo Intervención', 'Operario',
+        'Precio Acordado (€)', 'Abono Previo (€)', 'Estado Cobro Previo', 'Método Pago Previo', 'Fecha Pago Previo',
+        'Total Parte PVP (€)', 'Coste Neto Repuestos (€)', 'PVP Repuestos (€)', 'Margen Repuestos (€)',
+        'Forma Cobro Parte', 'Estado Cobro', 'Repuestos Detalle', 'Notas Oficina', 'Notas Técnico'
+      ].map(csvEsc).join(';');
+      const lines = rows.map(r => [
+        `#${r.numero}`, r.fechaEntrada, r.fechaEjecucion || '', r.tipoServicio, r.estadoAviso,
+        r.codigoCliente || '', r.clienteNombre, r.poblacion || '', r.maquina, r.tipoIntervencion, r.operario,
+        r.precioComunicado !== null && r.precioComunicado !== undefined ? numEs(r.precioComunicado) : '',
+        numEs(r.importeAbonadoPrevio), r.estadoCobroPrevio || 'PENDIENTE', r.metodoPagoPrevio || '', r.fechaPagoPrevio || '',
+        numEs(r.totalFacturado), numEs(r.costeNetoRepuestos), numEs(r.pvpRepuestos), numEs(r.margenRepuestos),
+        r.formaCobro || '', r.estadoCobro || '', r.repuestosTexto || '', r.observaciones || '', r.notasTecnico || ''
+      ].map(csvEsc).join(';'));
+      const csvBody = '\uFEFF' + [header, ...lines].join('\r\n');
+      const stamp = nowMadridStr().slice(0, 10);
+      const buf = Buffer.from(csvBody, 'utf8');
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="baza_mazano_contable_${stamp}.csv"`,
+        'Content-Length': buf.length
+      });
+      return res.end(buf);
     }
 
     // Backup completo de base de datos bajo demanda (Admin)
@@ -1302,7 +1570,9 @@ const server = http.createServer(async (req, res) => {
         tarifas: db.tarifas,
         operarios: db.operarios,
         marcas: db.marcas,
-        repuestos: db.repuestos,
+        repuestos: authUser.canSeeCostes
+          ? db.repuestos
+          : (db.repuestos || []).map(r => ({ ...r, precioNeto: undefined, portes: undefined })),
         vehiculos: VEHICULOS_OFICIALES,
         googleReviewUrl: process.env.GOOGLE_REVIEW_URL || 'https://g.page/r/CeTJ0YmzOC_AEAE/review',
         gastosVehiculos: db.gastosVehiculos,
@@ -1362,10 +1632,18 @@ const server = http.createServer(async (req, res) => {
       const q = (parsedUrl.searchParams.get('q') || '').trim().toLowerCase();
       const operario = (parsedUrl.searchParams.get('operario') || '').trim().toUpperCase();
       const prioridad = (parsedUrl.searchParams.get('prioridad') || '').trim().toUpperCase();
+      const tipoServicio = (parsedUrl.searchParams.get('tipoServicio') || 'TODOS').trim().toUpperCase();
       const sort = (parsedUrl.searchParams.get('sort') || 'newest').trim().toLowerCase();
       const limit = Math.min(500, parseInt(parsedUrl.searchParams.get('limit') || '150', 10));
 
       let list = db.avisos;
+      if (tipoServicio && tipoServicio !== 'TODOS') {
+        if (tipoServicio === 'MONTAJE_GOTERA') {
+          list = list.filter(a => String(a.tipoServicio || 'SAT').toUpperCase() === 'MONTAJE_GOTERA');
+        } else {
+          list = list.filter(a => String(a.tipoServicio || 'SAT').toUpperCase() !== 'MONTAJE_GOTERA');
+        }
+      }
       if (estado && estado !== 'TODOS') {
         if (estado === 'PERDIDOS') {
           const conFichaje = new Set(db.fichajes.map(f => f.idAviso));
@@ -1504,11 +1782,38 @@ const server = http.createServer(async (req, res) => {
         esFuego: Boolean(body.esFuego),
         llamadasTienda: Number(body.llamadasTienda) || (body.esFuego ? 1 : 0),
         tipoIntervencion: String(body.tipoIntervencion || 'SAT NORMAL').trim(),
+        tipoServicio: body.tipoServicio === 'MONTAJE_GOTERA' ? 'MONTAJE_GOTERA' : 'SAT',
         estadoAviso: authUser.lockedTechEmail ? 'SIN PROCESAR' : String(body.estadoAviso || 'SIN PROCESAR').trim(),
-        operarioPreasignado: String(body.operarioPreasignado || 'JACOBO').trim(),
+        operarioPreasignado: String(body.operarioPreasignado || (body.tipoServicio === 'MONTAJE_GOTERA' ? 'DANY' : 'JACOBO')).trim(),
         notasFichajes: '',
-        sumaImportes: 0
+        sumaImportes: 0,
+        // Información Económica Previa (Fase 1.5B)
+        precioComunicado: body.precioComunicado !== undefined && body.precioComunicado !== '' && body.precioComunicado !== null ? Number(body.precioComunicado) : null,
+        estadoCobroPrevio: ['PENDIENTE', 'SENAL_PARCIAL', 'ABONADO_TOTAL'].includes(String(body.estadoCobroPrevio || '').toUpperCase())
+          ? String(body.estadoCobroPrevio).toUpperCase()
+          : (body.pago50Verificado ? 'SENAL_PARCIAL' : 'PENDIENTE'),
+        importeAbonadoPrevio: Number(body.importeAbonadoPrevio) || 0,
+        metodoPagoPrevio: String(body.metodoPagoPrevio || '').trim().toUpperCase(),
+        fechaPagoPrevio: String(body.fechaPagoPrevio || '').trim(),
+        checklistAccesorios: body.checklistAccesorios && typeof body.checklistAccesorios === 'object' ? body.checklistAccesorios : null,
+        // Campos operativos Reunión 12-Nov (Buzón de Alertas)
+        esContratoObra: Boolean(body.esContratoObra),
+        modalidadLogistica: body.modalidadLogistica === 'ENVIO_ALMACEN' ? 'ENVIO_ALMACEN' : 'INSTALACION',
+        pago50Verificado: Boolean(body.pago50Verificado),
+        pago50Fecha: String(body.pago50Fecha || (body.pago50Verificado ? nowMadridStr().slice(0, 10) : '')).trim(),
+        pago50VerificadoPor: String(body.pago50VerificadoPor || '').trim(),
+        pedidoProveedorEstado: ['NO_APLICA', 'PENDIENTE', 'PEDIDO_ENVIADO', 'RECIBIDO'].includes(body.pedidoProveedorEstado)
+          ? body.pedidoProveedorEstado
+          : (body.esContratoObra ? 'PENDIENTE' : 'NO_APLICA'),
+        pedidoProveedorFecha: String(body.pedidoProveedorFecha || '').trim(),
+        pedidoProveedorRef: String(body.pedidoProveedorRef || '').trim(),
+        rematePendiente: Boolean(body.rematePendiente),
+        remateFechaLimite: String(body.remateFechaLimite || '').trim()
       };
+
+      if ((nuevoAviso.rematePendiente || nuevoAviso.estadoAviso === 'NUEVA CITA') && !nuevoAviso.remateFechaLimite) {
+        nuevoAviso.remateFechaLimite = addDaysMadridDate(7);
+      }
 
       db.avisos.unshift(nuevoAviso);
       saveDb();
@@ -1524,16 +1829,43 @@ const server = http.createServer(async (req, res) => {
 
       const allowed = [
         'estadoAviso', 'prioridad', 'esFuego', 'llamadasTienda', 'tratoCliente', 'operarioPreasignado',
-        'tipoIntervencion', 'observaciones', 'horariosDisponibles', 'marca',
+        'tipoIntervencion', 'tipoServicio', 'observaciones', 'horariosDisponibles', 'marca',
         'modelo', 'tipoAparato', 'contratoMant', 'codigoCliente', 'telefono1',
         'direccionCompleta', 'sumaImportes', 'notasFichajes', 'kmIdaVuelta',
-        'fechaInstalacion', 'docCompra', 'numSerie', 'relacion', 'instalacionBaza', 'observacionesAliquo'
+        'fechaInstalacion', 'docCompra', 'numSerie', 'relacion', 'instalacionBaza', 'observacionesAliquo',
+        'precioComunicado', 'estadoCobroPrevio', 'importeAbonadoPrevio', 'metodoPagoPrevio', 'fechaPagoPrevio',
+        'checklistAccesorios',
+        'esContratoObra', 'modalidadLogistica', 'pago50Verificado', 'pago50Fecha', 'pago50VerificadoPor',
+        'pedidoProveedorEstado', 'pedidoProveedorFecha', 'pedidoProveedorRef',
+        'rematePendiente', 'remateFechaLimite'
       ];
       for (const k of allowed) {
         if (body[k] !== undefined) aviso[k] = body[k];
       }
+      if (body.pago50Verificado === true && !aviso.pago50Fecha) {
+        aviso.pago50Fecha = nowMadridStr().slice(0, 10);
+      }
+      if (body.pedidoProveedorEstado === 'PEDIDO_ENVIADO' && !aviso.pedidoProveedorFecha) {
+        aviso.pedidoProveedorFecha = nowMadridStr().slice(0, 10);
+      }
+      if ((aviso.rematePendiente === true || aviso.estadoAviso === 'NUEVA CITA') && !aviso.remateFechaLimite) {
+        aviso.remateFechaLimite = addDaysMadridDate(7);
+      }
       saveDb();
       return sendJson(res, 200, { ok: true, aviso });
+    }
+
+    // 5.1 BUZÓN DE ALERTAS OPERATIVAS (3 SEMÁFOROS + REMATES 7 DÍAS)
+    if (pathname === '/api/sat/buzon-alertas' && req.method === 'GET') {
+      const buzon = computeBuzonAlertas();
+      return sendJson(res, 200, { ok: true, ...buzon });
+    }
+
+    // 5.2 HISTÓRICO GENERAL SAT BUSCABLE (Fase 1.5B)
+    if (pathname === '/api/sat/historico' && req.method === 'GET') {
+      const limit = Math.min(500, parseInt(parsedUrl.searchParams.get('limit') || '200', 10));
+      const result = buildHistoricoRows(parsedUrl.searchParams, authUser, limit);
+      return sendJson(res, 200, { ok: true, ...result });
     }
 
     // 6. RADAR GPS "DE CAMINO / CERCA DE MÍ" PARA TÉCNICOS
@@ -1621,6 +1953,21 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/citas' && req.method === 'POST') {
       const body = await readJsonBody(req);
       const av = db.avisos.find(a => a.idAviso === body.idAviso || String(a.numero) === String(body.avisoNumero));
+
+      // Regla estricta Nota 5: Bloqueo si es contrato de instalación sin señal del 50% verificada
+      if (av && av.esContratoObra === true && av.modalidadLogistica !== 'ENVIO_ALMACEN' && !av.pago50Verificado) {
+        if (!body.forzarSinSenal) {
+          return sendJson(res, 409, {
+            ok: false,
+            code: 'SENAL_50_NO_VERIFICADA',
+            error: 'Bloqueo operativo: El pago del 50% de señal no está verificado para este contrato de instalación.'
+          });
+        }
+        const stamp = nowMadridStr();
+        const notaOverride = `[OVERRIDE DIRECCIÓN SIN SEÑAL 50% - ${stamp}]`;
+        av.observaciones = av.observaciones ? `${av.observaciones}\n${notaOverride}` : notaOverride;
+      }
+
       const idCita = crypto.randomBytes(4).toString('hex');
 
       const asistentesArr = Array.isArray(body.asistentes)

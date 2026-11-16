@@ -1,9 +1,9 @@
-const CACHE_NAME = 'sat-baza-2026-v21';
+const CACHE_NAME = 'sat-baza-2026-v22';
 const ASSETS = [
   '/',
   '/index.html',
   '/styles.css?v=20261113c',
-  '/app.js?v=20261113c',
+  '/app.js?v=20261116a',
   '/manifest.json',
   '/logo_bazamazano_oficial.png'
 ];

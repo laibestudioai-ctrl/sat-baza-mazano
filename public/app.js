@@ -140,10 +140,21 @@ async function initAuthenticatedApp() {
   await loadBootstrap();
   await loadAvisosList();
   await loadCitasList();
+  loadBuzonAlertas();
+  startDespertadorPolling();
+  initKeywordAlertListeners();
 }
 
 async function checkAuthSession() {
   if (!state.authToken) {
+    try {
+      const probe = await fetch('/api/auth/me');
+      if (probe.status === 404) {
+        // Modo integrado en Portal Baza Hub (sin PIN obligatorio)
+        hidePinAuthOverlay();
+        return true;
+      }
+    } catch (e) {}
     showPinAuthOverlay('');
     return false;
   }
@@ -151,6 +162,10 @@ async function checkAuthSession() {
     const res = await fetch('/api/auth/me', {
       headers: { Authorization: `Bearer ${state.authToken}` }
     });
+    if (res.status === 404) {
+      hidePinAuthOverlay();
+      return true;
+    }
     const data = await res.json();
     if (res.ok && data.ok && data.user) {
       state.authUser = data.user;
@@ -225,9 +240,16 @@ function logoutPin() {
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   initSignaturePad();
+  updateDespertadorSoundUi();
+
+  const portalLink = document.getElementById('btnPortalBazaLink');
+  if (portalLink && location.pathname.startsWith('/sat')) {
+    portalLink.style.display = 'inline-flex';
+  }
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    const swUrl = location.pathname.startsWith('/sat') ? '/sat/sw.js' : '/sw.js';
+    navigator.serviceWorker.register(swUrl).catch(() => {});
   }
 
   const authenticated = await checkAuthSession();
@@ -447,13 +469,15 @@ function formatDateES(str) {
 async function loadAvisosList() {
   const estado = document.getElementById('filterEstadoAviso').value;
   const operario = document.getElementById('filterOperarioAviso').value;
+  const tipoServicioEl = document.getElementById('filterTipoServicioAviso');
   const prioridadEl = document.getElementById('filterPrioridadAviso');
   const sortEl = document.getElementById('sortAvisosOrder');
+  const tipoServicio = tipoServicioEl ? tipoServicioEl.value : 'TODOS';
   const prioridad = prioridadEl ? prioridadEl.value : 'TODAS';
   const sort = sortEl ? sortEl.value : 'newest';
   const q = document.getElementById('searchAvisosInput').value;
 
-  const params = new URLSearchParams({ estado, operario, prioridad, sort, q, limit: '150' });
+  const params = new URLSearchParams({ estado, operario, tipoServicio, prioridad, sort, q, limit: '150' });
   const res = await apiFetch(`/api/avisos?${params}`);
   const data = await res.json();
   if (!data.ok) return;
@@ -484,6 +508,7 @@ async function loadAvisosList() {
         </div>
         <div class="aviso-client">
           ${escapeHtml(a.nombreCliente)} ${escapeHtml(a.apellidosCliente)}
+          ${a.tipoServicio === 'MONTAJE_GOTERA' ? `<span class="badge badge-amber" style="margin-left:4px;">🏗️ MONTAJE/GOTERA</span>` : ''}
           ${a.codigoCliente && a.codigoCliente !== 'NO ES CLIENTE' ? `<span class="badge badge-blue" style="margin-left:4px;">${escapeHtml(a.codigoCliente)}</span>` : ''}
           ${a.contratoMant ? `<span class="badge badge-green" style="margin-left:4px;">🛡️ CM</span>` : ''}
         </div>
@@ -491,6 +516,11 @@ async function loadAvisosList() {
           <span>🔥 ${escapeHtml(a.tipoAparato)} · <strong>${escapeHtml(a.marca || 'S/M')}</strong> ${escapeHtml(a.modelo || '')}</span>
           <span>👷 ${escapeHtml(a.operarioPreasignado || 'JACOBO')}</span>
         </div>
+        ${(a.precioComunicado !== null && a.precioComunicado !== undefined) || Number(a.importeAbonadoPrevio || 0) > 0 ? `
+          <div style="margin-top:4px;font-size:10.5px;color:#34d399;font-weight:700;">
+            💶 ${a.precioComunicado !== null && a.precioComunicado !== undefined ? `Acordado: ${Number(a.precioComunicado).toFixed(2)}€` : ''}${Number(a.importeAbonadoPrevio || 0) > 0 ? ` · Abonado: ${Number(a.importeAbonadoPrevio).toFixed(2)}€ (${escapeHtml(a.metodoPagoPrevio || 'Previo')})` : ''}
+          </div>
+        ` : ''}
         <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
           ${badgeForEstado(a.estadoAviso)}
           <span class="intervencion-hero-badge">🔧 ${escapeHtml(a.tipoIntervencion || 'SAT NORMAL')}</span>
@@ -545,6 +575,9 @@ async function selectAviso(idAviso) {
         <button class="btn ${isFuego ? 'btn-primary' : 'btn-ghost'}" style="${isFuego ? 'background:#dc2626;border-color:#b91c1c;' : ''}" onclick="quickUpdateAviso('${av.idAviso}', { esFuego: true, llamadasTienda: ${Number(av.llamadasTienda || 0) + 1} })" title="Marcar o sumar llamada insistente del cliente">
           🔥 Rellamó (+1)
         </button>
+        <button class="btn btn-ghost" onclick="openCrearDespertadorModal('${av.idAviso}')" title="Programar despertador/alarma para este aviso">
+          ⏰ Despertador
+        </button>
         <button class="btn btn-primary" onclick="openAgendarCitaModal('${av.idAviso}')">
           📅 Agendar Cita / Pareja
         </button>
@@ -586,6 +619,8 @@ async function selectAviso(idAviso) {
               <option value="DIONI" ${av.operarioPreasignado === 'DIONI' ? 'selected' : ''}>🟠 DIONI</option>
               <option value="ROBERTO" ${av.operarioPreasignado === 'ROBERTO' ? 'selected' : ''}>🟣 ROBERTO</option>
               <option value="ISMA" ${av.operarioPreasignado === 'ISMA' ? 'selected' : ''}>🟡 ISMA</option>
+              <option value="DANY" ${av.operarioPreasignado === 'DANY' ? 'selected' : ''}>🏗️ DANY (Montaje/Gotera)</option>
+              <option value="JUAN" ${av.operarioPreasignado === 'JUAN' ? 'selected' : ''}>🏗️ JUAN (Montaje/Gotera)</option>
             </select>
           </div>
           <div class="field">
@@ -595,6 +630,48 @@ async function selectAviso(idAviso) {
               <option value="REGULAR" ${av.tratoCliente === 'REGULAR' ? 'selected' : ''}>🟡 REGULAR</option>
               <option value="MALO" ${av.tratoCliente === 'MALO' ? 'selected' : ''}>🔴 MALO (Ir en pareja)</option>
             </select>
+          </div>
+        </div>
+        <div class="form-grid" style="grid-template-columns: repeat(5, 1fr); gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed var(--border);">
+          <div class="field">
+            <label>Circuito</label>
+            <select onchange="quickUpdateAviso('${av.idAviso}', { tipoServicio: this.value })">
+              <option value="SAT" ${av.tipoServicio !== 'MONTAJE_GOTERA' ? 'selected' : ''}>🔧 SAT</option>
+              <option value="MONTAJE_GOTERA" ${av.tipoServicio === 'MONTAJE_GOTERA' ? 'selected' : ''}>🏗️ Montaje/Gotera</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Precio Acordado (€)</label>
+            <input type="number" step="0.01" id="editPrecioComunicado_${av.idAviso}" value="${av.precioComunicado !== null && av.precioComunicado !== undefined ? Number(av.precioComunicado) : ''}" placeholder="0.00" />
+          </div>
+          <div class="field">
+            <label>Estado Cobro Previo</label>
+            <select id="editEstadoCobroPrevio_${av.idAviso}">
+              <option value="PENDIENTE" ${(av.estadoCobroPrevio || 'PENDIENTE') === 'PENDIENTE' ? 'selected' : ''}>⏳ Pendiente</option>
+              <option value="SENAL_PARCIAL" ${av.estadoCobroPrevio === 'SENAL_PARCIAL' ? 'selected' : ''}>🟡 Señal / Parcial</option>
+              <option value="ABONADO_TOTAL" ${av.estadoCobroPrevio === 'ABONADO_TOTAL' ? 'selected' : ''}>✅ Abonado Total</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Abonado (€) / Método</label>
+            <div style="display:flex;gap:4px;">
+              <input type="number" step="0.01" id="editImporteAbonado_${av.idAviso}" value="${Number(av.importeAbonadoPrevio || 0) || ''}" placeholder="€" style="width:72px;" />
+              <select id="editMetodoPagoPrevio_${av.idAviso}" style="flex:1;">
+                <option value="">--</option>
+                <option value="EFECTIVO" ${av.metodoPagoPrevio === 'EFECTIVO' ? 'selected' : ''}>Efectivo</option>
+                <option value="TARJETA" ${av.metodoPagoPrevio === 'TARJETA' ? 'selected' : ''}>Tarjeta</option>
+                <option value="BIZUM" ${av.metodoPagoPrevio === 'BIZUM' ? 'selected' : ''}>Bizum</option>
+                <option value="TRANSFERENCIA" ${av.metodoPagoPrevio === 'TRANSFERENCIA' ? 'selected' : ''}>Transf.</option>
+                <option value="FINANCIACION" ${av.metodoPagoPrevio === 'FINANCIACION' ? 'selected' : ''}>Financ.</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Fecha Pago Previo</label>
+            <div style="display:flex;gap:4px;">
+              <input type="date" id="editFechaPagoPrevio_${av.idAviso}" value="${escapeHtml(av.fechaPagoPrevio || '')}" style="flex:1;" />
+              <button type="button" class="btn btn-green" style="padding:4px 8px;font-size:11px;" onclick="saveAvisoEconomico('${av.idAviso}')" title="Guardar datos económicos previos">💾</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1181,6 +1258,63 @@ async function loadAvisosPerdidosTable() {
       </tbody>
     </table>
   `;
+
+  const searchVal = document.getElementById('repuestosCatalogSearch') ? document.getElementById('repuestosCatalogSearch').value : '';
+  renderRepuestosCatalogTable(searchVal);
+}
+
+function renderRepuestosCatalogTable(query = '') {
+  if (!state.bootstrap) return;
+  const container = document.getElementById('repuestosCatalogContainer');
+  const countEl = document.getElementById('repuestosCatalogCount');
+  if (!container) return;
+
+  const canCostes = Boolean(state.authUser && state.authUser.canSeeCostes);
+  const all = Array.isArray(state.bootstrap.repuestos) ? state.bootstrap.repuestos : [];
+  const q = String(query || '').trim().toLowerCase();
+  const filtered = q
+    ? all.filter(r =>
+        String(r.codigo || '').toLowerCase().includes(q) ||
+        String(r.descripcion || '').toLowerCase().includes(q) ||
+        String(r.marca || '').toLowerCase().includes(q)
+      )
+    : all;
+
+  if (countEl) countEl.textContent = `${filtered.length}${q ? ` / ${all.length}` : ''}`;
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);">No hay repuestos que coincidan con "${escapeHtml(q)}".</div>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Código</th>
+          <th>Descripción Repuesto</th>
+          <th>Marca / Familia</th>
+          ${canCostes ? '<th style="text-align:right;">Coste Neto</th>' : ''}
+          <th style="text-align:right;">PVP</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(r => {
+          const pvp = Number(r.pvp ?? r.precio ?? 0);
+          const neto = Number(r.precioNeto || 0);
+          return `
+            <tr>
+              <td><span class="badge badge-blue">${escapeHtml(r.codigo || '-')}</span></td>
+              <td><strong>${escapeHtml(r.descripcion || '-')}</strong></td>
+              <td style="color:var(--text-muted);">${escapeHtml(r.marca || 'GENERAL')}</td>
+              ${canCostes ? `<td style="text-align:right;color:var(--text-muted);">${neto.toFixed(2)} €</td>` : ''}
+              <td style="text-align:right;"><strong style="color:#34d399;">${pvp.toFixed(2)} €</strong></td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
 }
 
 function pingTecnicoWhatsapp(operario, numero, cliente) {
@@ -1255,6 +1389,63 @@ function renderCatalogosMando() {
             <td><span style="color:#60a5fa;font-weight:700;">${val.aguaCliente} €</span> / ${val.aguaNoCliente} €</td>
           </tr>
         `).join('')}
+      </tbody>
+    </table>
+  `;
+
+  const searchVal = document.getElementById('repuestosCatalogSearch') ? document.getElementById('repuestosCatalogSearch').value : '';
+  renderRepuestosCatalogTable(searchVal);
+}
+
+function renderRepuestosCatalogTable(query = '') {
+  if (!state.bootstrap) return;
+  const container = document.getElementById('repuestosCatalogContainer');
+  const countEl = document.getElementById('repuestosCatalogCount');
+  if (!container) return;
+
+  const canCostes = Boolean(state.authUser && state.authUser.canSeeCostes);
+  const all = Array.isArray(state.bootstrap.repuestos) ? state.bootstrap.repuestos : [];
+  const q = String(query || '').trim().toLowerCase();
+  const filtered = q
+    ? all.filter(r =>
+        String(r.codigo || '').toLowerCase().includes(q) ||
+        String(r.descripcion || '').toLowerCase().includes(q) ||
+        String(r.marca || '').toLowerCase().includes(q)
+      )
+    : all;
+
+  if (countEl) countEl.textContent = `${filtered.length}${q ? ` / ${all.length}` : ''}`;
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);">No hay repuestos que coincidan con "${escapeHtml(q)}".</div>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Código</th>
+          <th>Descripción Repuesto</th>
+          <th>Marca / Familia</th>
+          ${canCostes ? '<th style="text-align:right;">Coste Neto</th>' : ''}
+          <th style="text-align:right;">PVP</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(r => {
+          const pvp = Number(r.pvp ?? r.precio ?? 0);
+          const neto = Number(r.precioNeto || 0);
+          return `
+            <tr>
+              <td><span class="badge badge-blue">${escapeHtml(r.codigo || '-')}</span></td>
+              <td><strong>${escapeHtml(r.descripcion || '-')}</strong></td>
+              <td style="color:var(--text-muted);">${escapeHtml(r.marca || 'GENERAL')}</td>
+              ${canCostes ? `<td style="text-align:right;color:var(--text-muted);">${neto.toFixed(2)} €</td>` : ''}
+              <td style="text-align:right;"><strong style="color:#34d399;">${pvp.toFixed(2)} €</strong></td>
+            </tr>
+          `;
+        }).join('')}
       </tbody>
     </table>
   `;
@@ -1402,6 +1593,15 @@ async function refreshMobileView() {
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
               📍 ${escapeHtml(c.direccion)} ${av ? `· <strong>${av.kmIdaVuelta || 14} km I/V</strong>` : ''}
             </div>
+
+            ${av && ((av.precioComunicado !== null && av.precioComunicado !== undefined) || Number(av.importeAbonadoPrevio || 0) > 0 || (av.estadoCobroPrevio && av.estadoCobroPrevio !== 'PENDIENTE')) ? `
+              <div style="background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.4);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:11.5px;color:#6ee7b7;">
+                💶 <strong>Económico Previo:</strong>
+                ${av.precioComunicado !== null && av.precioComunicado !== undefined ? `Precio acordado <strong>${Number(av.precioComunicado).toFixed(2)} €</strong>` : ''}
+                ${Number(av.importeAbonadoPrevio || 0) > 0 ? ` · Abonado <strong>${Number(av.importeAbonadoPrevio).toFixed(2)} €</strong> (${escapeHtml(av.metodoPagoPrevio || 'Previo')}${av.fechaPagoPrevio ? ', ' + escapeHtml(av.fechaPagoPrevio) : ''})` : ''}
+                ${av.estadoCobroPrevio === 'ABONADO_TOTAL' ? ' · ✅ YA ABONADO' : (av.estadoCobroPrevio === 'SENAL_PARCIAL' ? ' · 🟡 SEÑAL PARCIAL' : '')}
+              </div>
+            ` : ''}
 
             ${infoMarca ? `
               <div class="brand-pin-box" style="padding:8px 10px;margin-bottom:10px;font-size:11px;">
@@ -1981,10 +2181,14 @@ function switchAdminTab(tab) {
   document.getElementById('adminTabAliquo').classList.toggle('active', tab === 'aliquo');
   document.getElementById('adminTabContratos').classList.toggle('active', tab === 'contratos');
   document.getElementById('adminTabFlota').classList.toggle('active', tab === 'flota');
+  const histTab = document.getElementById('adminTabHistorico');
+  if (histTab) histTab.classList.toggle('active', tab === 'historico');
 
   document.getElementById('adminSectionAliquo').style.display = tab === 'aliquo' ? 'block' : 'none';
   document.getElementById('adminSectionContratos').style.display = tab === 'contratos' ? 'block' : 'none';
   document.getElementById('adminSectionFlota').style.display = tab === 'flota' ? 'block' : 'none';
+  const histSec = document.getElementById('adminSectionHistorico');
+  if (histSec) histSec.style.display = tab === 'historico' ? 'block' : 'none';
 
   renderAdminView();
 }
@@ -2278,6 +2482,8 @@ async function renderAdminView() {
         </div>
       </div>
     `;
+  } else if (state.adminTab === 'historico') {
+    await renderHistoricoAdminSection();
   }
 }
 
@@ -2608,12 +2814,30 @@ async function submitNuevoAviso(e) {
     instalacionBaza: document.getElementById('newInstalacionBaza') ? document.getElementById('newInstalacionBaza').value : '',
     observacionesAliquo: document.getElementById('newObservacionesAliquo') ? document.getElementById('newObservacionesAliquo').value : '',
     tipoIntervencion: document.getElementById('newTipoIntervencion').value,
+    tipoServicio: document.getElementById('newTipoServicio') ? document.getElementById('newTipoServicio').value : 'SAT',
     prioridad: document.getElementById('newPrioridad').value,
     esFuego: Boolean(document.getElementById('newEsFuego') && document.getElementById('newEsFuego').checked),
     contratoMant: document.getElementById('newContratoMant').value === 'true',
     anota: document.getElementById('newAnota').value,
     operarioPreasignado: document.getElementById('newOperarioPreasignado').value,
     observaciones: document.getElementById('newObservaciones').value,
+    precioComunicado: document.getElementById('newPrecioComunicado') && document.getElementById('newPrecioComunicado').value !== '' ? Number(document.getElementById('newPrecioComunicado').value) : null,
+    estadoCobroPrevio: document.getElementById('newEstadoCobroPrevio') ? document.getElementById('newEstadoCobroPrevio').value : 'PENDIENTE',
+    importeAbonadoPrevio: document.getElementById('newImporteAbonadoPrevio') ? Number(document.getElementById('newImporteAbonadoPrevio').value || 0) : 0,
+    metodoPagoPrevio: document.getElementById('newMetodoPagoPrevio') ? document.getElementById('newMetodoPagoPrevio').value : '',
+    fechaPagoPrevio: document.getElementById('newFechaPagoPrevio') ? document.getElementById('newFechaPagoPrevio').value : '',
+    checklistAccesorios: {
+      tRegistro: Boolean(document.getElementById('chkAccTRegistro')?.checked),
+      sombrerete: Boolean(document.getElementById('chkAccSombrerete')?.checked),
+      reduccionDiametro: Boolean(document.getElementById('chkAccReduccion')?.checked),
+      tomaAirePlaca: Boolean(document.getElementById('chkAccTomaAire')?.checked),
+      otrosAccesorios: document.getElementById('newOtrosAccesorios') ? document.getElementById('newOtrosAccesorios').value.trim() : ''
+    },
+    esContratoObra: Boolean(document.getElementById('newEsContratoObra') && document.getElementById('newEsContratoObra').checked),
+    modalidadLogistica: document.getElementById('newModalidadLogistica') ? document.getElementById('newModalidadLogistica').value : 'INSTALACION',
+    pago50Verificado: Boolean(document.getElementById('newPago50Verificado') && document.getElementById('newPago50Verificado').checked),
+    pedidoProveedorEstado: document.getElementById('newPedidoProveedorEstado') ? document.getElementById('newPedidoProveedorEstado').value : 'NO_APLICA',
+    rematePendiente: Boolean(document.getElementById('newRematePendiente') && document.getElementById('newRematePendiente').checked),
     crearClienteEnAliquo: !document.getElementById('newCodigoCliente').value || document.getElementById('newCodigoCliente').value === 'NO ES CLIENTE',
     estadoAviso: 'SIN PROCESAR'
   };
@@ -2628,6 +2852,7 @@ async function submitNuevoAviso(e) {
     closeModal('modalNuevoAviso');
     await loadBootstrap();
     await loadAvisosList();
+    loadBuzonAlertas();
     selectAviso(data.aviso.idAviso);
 
     if (data.clienteCreado) {
@@ -2684,11 +2909,21 @@ async function submitAgendarCita(e) {
     body: JSON.stringify(payload)
   });
   const data = await res.json();
+  if (res.status === 409 && data.code === 'SENAL_50_NO_VERIFICADA') {
+    window._pendingCitaPayload = payload;
+    const msgEl = document.getElementById('bloqueoSenal50Msg');
+    if (msgEl) msgEl.textContent = data.error || 'El pago del 50% de señal no está verificado para este contrato de instalación.';
+    document.getElementById('modalBloqueoSenal50').classList.add('open');
+    return;
+  }
   if (data.ok) {
     closeModal('modalAgendarCita');
     await loadBootstrap();
     await loadAvisosList();
     await loadCitasList();
+    loadBuzonAlertas();
+  } else if (data.error) {
+    alert('⚠️ ' + data.error);
   }
 }
 
@@ -2827,3 +3062,684 @@ window.renderWeeklyCalendar = renderWeeklyCalendar;
 window.toggleMobileCrewTeammate = toggleMobileCrewTeammate;
 window.onMobileTechChanged = onMobileTechChanged;
 window.getSelectedMobilePartnersString = getSelectedMobilePartnersString;
+
+// =========================================================================
+// DICCIONARIO DE ALERTAS POR PALABRA CLAVE (NOTA 10)
+// =========================================================================
+const KEYWORD_ALERTS = [
+  {
+    keywords: ['RCR70'],
+    title: '⚠️ ALERTA PRODUCTO DELICADO: RCR70',
+    msg: 'Verificar diámetro de salida de humos, accesorios especiales y confirmar compatibilidad antes de cerrar pedido.'
+  },
+  {
+    keywords: ['HIDRO', 'TERMOESTUFA'],
+    title: '💧 ALERTA EQUIPO HIDRO / TERMOESTUFA',
+    msg: 'Requiere revisión de circuito hidráulico, vaso de expansión, válvula anticondensados y verificar Señal 50% antes de planning.'
+  },
+  {
+    keywords: ['ECOFOREST'],
+    title: '⚡ ALERTA PREVENTIVA ECOFOREST (Nota 2)',
+    msg: 'Recordar al cliente desconectar la máquina de la corriente en verano por picos de tensión/tormentas (no cubierto por garantía).'
+  }
+];
+
+function evaluateKeywordAlerts() {
+  const banner = document.getElementById('keywordAlertBanner');
+  if (!banner) return;
+  const marca = (document.getElementById('newMarca')?.value || '').toUpperCase();
+  const modelo = (document.getElementById('newModelo')?.value || '').toUpperCase();
+  const obs = (document.getElementById('newObservaciones')?.value || '').toUpperCase();
+  const combined = `${marca} ${modelo} ${obs}`;
+
+  const matched = KEYWORD_ALERTS.filter(rule => rule.keywords.some(kw => combined.includes(kw)));
+  if (matched.length === 0) {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    return;
+  }
+  banner.style.display = 'block';
+  banner.innerHTML = matched.map(m => `<div style="margin-bottom:4px;"><strong>${escapeHtml(m.title)}:</strong> ${escapeHtml(m.msg)}</div>`).join('');
+}
+
+function initKeywordAlertListeners() {
+  ['newMarca', 'newModelo', 'newObservaciones'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && !el.dataset.kwBound) {
+      el.dataset.kwBound = '1';
+      el.addEventListener('input', evaluateKeywordAlerts);
+    }
+  });
+}
+
+// =========================================================================
+// BUZÓN DE ALERTAS OPERATIVAS (3 SEMÁFOROS + REMATES 7 DÍAS)
+// =========================================================================
+let _buzonData = { counts: { sinPlanning: 0, pendienteSenal50: 0, pedidosProveedor: 0, rematesUrgentes: 0 }, sinPlanning: [], pendienteSenal50: [], pedidosProveedor: [], rematesUrgentes: [] };
+let _buzonActiveTab = 'sinPlanning';
+
+async function loadBuzonAlertas() {
+  try {
+    const res = await apiFetch('/api/sat/buzon-alertas');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.ok) return;
+    _buzonData = data;
+    const c = data.counts || {};
+    const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = String(val || 0); };
+    setTxt('buzonCountSinPlanning', c.sinPlanning);
+    setTxt('buzonCountSenal50', c.pendienteSenal50);
+    setTxt('buzonCountPedidos', c.pedidosProveedor);
+    setTxt('buzonCountRemates', c.rematesUrgentes);
+    setTxt('buzonTabCount_sinPlanning', c.sinPlanning);
+    setTxt('buzonTabCount_pendienteSenal50', c.pendienteSenal50);
+    setTxt('buzonTabCount_pedidosProveedor', c.pedidosProveedor);
+    setTxt('buzonTabCount_rematesUrgentes', c.rematesUrgentes);
+
+    const remBadge = document.getElementById('buzonBadgeRemates');
+    if (remBadge) remBadge.style.display = (c.rematesUrgentes || 0) > 0 ? 'inline-flex' : 'none';
+
+    if (document.getElementById('modalBuzonAlertas')?.classList.contains('open')) {
+      renderBuzonTabList();
+    }
+  } catch (e) {}
+}
+
+function openBuzonAlertas(tab = 'sinPlanning') {
+  _buzonActiveTab = tab || 'sinPlanning';
+  document.getElementById('modalBuzonAlertas')?.classList.add('open');
+  switchBuzonTab(_buzonActiveTab);
+  loadBuzonAlertas();
+}
+
+function switchBuzonTab(tab) {
+  _buzonActiveTab = tab;
+  ['sinPlanning', 'pendienteSenal50', 'pedidosProveedor', 'rematesUrgentes'].forEach(t => {
+    const btn = document.getElementById(`buzonTab_${t}`);
+    if (btn) btn.classList.toggle('active', t === tab);
+  });
+  renderBuzonTabList();
+}
+
+function renderBuzonTabList() {
+  const container = document.getElementById('buzonAlertasList');
+  if (!container) return;
+  const items = Array.isArray(_buzonData[_buzonActiveTab]) ? _buzonData[_buzonActiveTab] : [];
+  if (items.length === 0) {
+    container.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted);">✅ Cero alertas pendientes en esta categoría.</div>`;
+    return;
+  }
+
+  container.innerHTML = items.map(it => {
+    const diasTxt = _buzonActiveTab === 'rematesUrgentes' && it.diasRestantes !== null && it.diasRestantes !== undefined
+      ? (it.diasRestantes < 0 ? `<span class="badge badge-red">Vencido hace ${Math.abs(it.diasRestantes)}d</span>` : `<span class="badge badge-orange">Quedan ${it.diasRestantes}d</span>`)
+      : '';
+    const extraBtns = [];
+    if (_buzonActiveTab === 'pendienteSenal50') {
+      extraBtns.push(`<button type="button" class="btn btn-green" style="font-size:11.5px;padding:5px 9px;" onclick="buzonQuickVerifySenal('${it.idAviso}')">✅ Verificar 50%</button>`);
+    }
+    if (_buzonActiveTab === 'pedidosProveedor') {
+      extraBtns.push(`<button type="button" class="btn btn-blue" style="font-size:11.5px;padding:5px 9px;" onclick="buzonQuickMarkPedido('${it.idAviso}')">📤 Pedido Enviado</button>`);
+    }
+    return `
+      <div class="buzon-item-card">
+        <div>
+          <div style="font-weight:800;font-size:13.5px;">#${escapeHtml(String(it.numero || ''))} — ${escapeHtml(it.nombreCliente)} ${escapeHtml(it.apellidosCliente)} ${diasTxt}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
+            📞 ${escapeHtml(it.telefono1 || 'Sin tel.')} · 📍 ${escapeHtml(it.poblacion || '')} · 🔥 ${escapeHtml(it.marca || '')} ${escapeHtml(it.modelo || '')} ${it.docCompra ? `· 📄 ${escapeHtml(it.docCompra)}` : ''}
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${extraBtns.join('')}
+          <button type="button" class="btn btn-primary" style="font-size:11.5px;padding:5px 10px;" onclick="buzonOpenAviso('${it.idAviso}')">🔎 Abrir Aviso</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function buzonQuickVerifySenal(idAviso) {
+  const res = await apiFetch(`/api/avisos/${idAviso}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pago50Verificado: true })
+  });
+  if (res.ok) {
+    await loadAvisosList();
+    await loadBuzonAlertas();
+  }
+}
+
+async function buzonQuickMarkPedido(idAviso) {
+  const res = await apiFetch(`/api/avisos/${idAviso}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pedidoProveedorEstado: 'PEDIDO_ENVIADO' })
+  });
+  if (res.ok) {
+    await loadAvisosList();
+    await loadBuzonAlertas();
+  }
+}
+
+async function buzonOpenAviso(idAviso) {
+  closeModal('modalBuzonAlertas');
+  switchRole('mando');
+  switchMandoTab('triaje');
+  const existing = state.avisos.find(a => a.idAviso === idAviso);
+  if (!existing) {
+    const sel = document.getElementById('filterEstadoAviso');
+    if (sel) sel.value = 'TODOS';
+    await loadAvisosList();
+  }
+  selectAviso(idAviso);
+}
+
+// =========================================================================
+// BLOQUEO SEÑAL 50% EN DESPACHADOR DE CITAS (NOTA 5)
+// =========================================================================
+async function resolverBloqueoVerificar50() {
+  const payload = window._pendingCitaPayload;
+  if (!payload || !payload.idAviso) return;
+  const patchRes = await apiFetch(`/api/avisos/${payload.idAviso}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pago50Verificado: true })
+  });
+  if (!patchRes.ok) return alert('No se pudo verificar el pago 50%.');
+
+  const res = await apiFetch('/api/citas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (data.ok) {
+    window._pendingCitaPayload = null;
+    closeModal('modalBloqueoSenal50');
+    closeModal('modalAgendarCita');
+    await loadBootstrap();
+    await loadAvisosList();
+    await loadCitasList();
+    loadBuzonAlertas();
+  }
+}
+
+async function resolverBloqueoForzar() {
+  const payload = window._pendingCitaPayload;
+  if (!payload) return;
+  const forcedPayload = Object.assign({}, payload, { forzarSinSenal: true });
+  const res = await apiFetch('/api/citas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(forcedPayload)
+  });
+  const data = await res.json();
+  if (data.ok) {
+    window._pendingCitaPayload = null;
+    closeModal('modalBloqueoSenal50');
+    closeModal('modalAgendarCita');
+    await loadBootstrap();
+    await loadAvisosList();
+    await loadCitasList();
+    loadBuzonAlertas();
+  }
+}
+
+// =========================================================================
+// DESPERTADOR DE TAREAS Y ALERTAS (WEB AUDIO API + POLLING 15s)
+// =========================================================================
+let _despertadorTimer = null;
+let _despertadorAlarms = [];
+let _despertadorSeenIds = new Set();
+let _despertadorSoundOn = localStorage.getItem('sat_despertador_sound') !== 'off';
+
+function updateDespertadorSoundUi() {
+  const btn = document.getElementById('btnDespertadorSound');
+  if (btn) btn.textContent = _despertadorSoundOn ? '🔊' : '🔇';
+}
+
+function toggleDespertadorSound() {
+  _despertadorSoundOn = !_despertadorSoundOn;
+  localStorage.setItem('sat_despertador_sound', _despertadorSoundOn ? 'on' : 'off');
+  updateDespertadorSoundUi();
+  if (_despertadorSoundOn) playDespertadorBeep();
+}
+
+function playDespertadorBeep() {
+  if (!_despertadorSoundOn) return;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    [523.25, 659.25].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.16);
+      gain.gain.setValueAtTime(0.08, now + idx * 0.16);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.16 + 0.14);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.16);
+      osc.stop(now + idx * 0.16 + 0.15);
+    });
+  } catch (e) {}
+}
+
+function startDespertadorPolling() {
+  if (_despertadorTimer) clearInterval(_despertadorTimer);
+  pollDespertadorActivos();
+  _despertadorTimer = setInterval(pollDespertadorActivos, 15000);
+}
+
+async function pollDespertadorActivos() {
+  try {
+    const res = await fetch('/api/despertador/activos');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.ok) return;
+    _despertadorAlarms = Array.isArray(data.alarms) ? data.alarms : [];
+    const badge = document.getElementById('despertadorBadge');
+    if (badge) {
+      badge.textContent = String(_despertadorAlarms.length);
+      badge.style.display = _despertadorAlarms.length > 0 ? 'inline-flex' : 'none';
+    }
+    const newAlarms = _despertadorAlarms.filter(a => !_despertadorSeenIds.has(a.id));
+    if (newAlarms.length > 0) {
+      newAlarms.forEach(a => _despertadorSeenIds.add(a.id));
+      playDespertadorBeep();
+      showDespertadorToast(newAlarms[0]);
+    }
+    if (document.getElementById('modalDespertadorAlarma')?.classList.contains('open')) {
+      renderDespertadorModal();
+    }
+  } catch (e) {}
+}
+
+function showDespertadorToast(alarm) {
+  let toast = document.getElementById('despertadorToastBox');
+  if (toast) toast.remove();
+  toast = document.createElement('div');
+  toast.id = 'despertadorToastBox';
+  toast.className = 'despertador-toast';
+  const isTask = !alarm.autoGenerated;
+  toast.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <strong style="font-size:13px;color:#fb923c;">⏰ DESPERTADOR ${escapeHtml(alarm.sourceApp || 'SAT')}</strong>
+      <button type="button" class="btn btn-ghost" style="padding:2px 6px;font-size:12px;" onclick="this.closest('#despertadorToastBox').remove()">✕</button>
+    </div>
+    <div style="font-weight:800;font-size:13.5px;margin-bottom:4px;">${escapeHtml(alarm.title)}</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">${escapeHtml(alarm.desc || '')}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${isTask ? `
+        <button type="button" class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${alarm.id}', { minutes: 15 })">⏱️ +15m</button>
+        <button type="button" class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${alarm.id}', { minutes: 60 })">🕐 +1h</button>
+        <button type="button" class="btn btn-ghost" style="font-size:11px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${alarm.id}', { tomorrow9am: true })">🌅 Mañana 09:00</button>
+        <button type="button" class="btn btn-green" style="font-size:11px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${alarm.id}', { dismiss: true })">✅ Descartar</button>
+      ` : ''}
+      ${alarm.linkedAvisoId ? `<button type="button" class="btn btn-primary" style="font-size:11px;padding:4px 8px;" onclick="document.getElementById('despertadorToastBox')?.remove();buzonOpenAviso('${alarm.linkedAvisoId}')">🔎 Ir al Aviso</button>` : ''}
+    </div>
+  `;
+  document.body.appendChild(toast);
+}
+
+function openDespertadorDrawer() {
+  document.getElementById('modalDespertadorAlarma')?.classList.add('open');
+  renderDespertadorModal();
+}
+
+function renderDespertadorModal() {
+  const list = document.getElementById('despertadorAlarmsList');
+  if (!list) return;
+  if (_despertadorAlarms.length === 0) {
+    list.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted);">⏰ No hay alarmas activas en este momento.</div>`;
+    return;
+  }
+  list.innerHTML = _despertadorAlarms.map(a => {
+    const isTask = !a.autoGenerated;
+    return `
+      <div class="despertador-alarm-card">
+        <div style="flex:1;min-width:220px;">
+          <div style="font-weight:800;font-size:13.5px;">${escapeHtml(a.title)}</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${escapeHtml(a.desc || '')}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${isTask ? `
+            <button type="button" class="btn btn-ghost" style="font-size:11.5px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${a.id}', { minutes: 15 })">⏱️ +15m</button>
+            <button type="button" class="btn btn-ghost" style="font-size:11.5px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${a.id}', { minutes: 60 })">🕐 +1h</button>
+            <button type="button" class="btn btn-ghost" style="font-size:11.5px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${a.id}', { tomorrow9am: true })">🌅 Mañana 09:00</button>
+            <button type="button" class="btn btn-green" style="font-size:11.5px;padding:4px 8px;" onclick="snoozeDespertadorAlarm('${a.id}', { dismiss: true })">✅ Descartar</button>
+          ` : ''}
+          ${a.linkedAvisoId ? `<button type="button" class="btn btn-primary" style="font-size:11.5px;padding:4px 8px;" onclick="closeModal('modalDespertadorAlarma');buzonOpenAviso('${a.linkedAvisoId}')">🔎 Ir al Aviso</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function snoozeDespertadorAlarm(id, opts) {
+  try {
+    const res = await fetch('/api/hub/tasks/snooze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ id }, opts))
+    });
+    if (res.ok) {
+      document.getElementById('despertadorToastBox')?.remove();
+      await pollDespertadorActivos();
+    }
+  } catch (e) {}
+}
+
+function openCrearDespertadorModal(idAviso) {
+  const av = state.avisos.find(a => a.idAviso === idAviso);
+  if (!av) return;
+  document.getElementById('despLinkedAvisoId').value = av.idAviso;
+  document.getElementById('despTitle').value = `Aviso #${av.numero} — ${av.nombreCliente} ${av.apellidosCliente}`.trim();
+  document.getElementById('despPreset').value = '1h';
+  onDespPresetChange('1h');
+  document.getElementById('modalCrearDespertador')?.classList.add('open');
+}
+
+function onDespPresetChange(val) {
+  const wrap = document.getElementById('despCustomWrap');
+  if (wrap) wrap.style.display = val === 'custom' ? 'block' : 'none';
+}
+
+function computeReminderIso(preset, customVal) {
+  const d = new Date();
+  if (preset === '1h') {
+    return new Date(Date.now() + 3600000).toISOString();
+  }
+  if (preset === 'hoy17') {
+    d.setHours(17, 0, 0, 0);
+    return d.toISOString();
+  }
+  if (preset === 'manana9') {
+    d.setDate(d.getDate() + 1);
+    d.setHours(9, 0, 0, 0);
+    return d.toISOString();
+  }
+  if (preset === 'custom' && customVal) {
+    const parsed = new Date(customVal);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+  return new Date(Date.now() + 3600000).toISOString();
+}
+
+async function submitCrearDespertadorAviso(e) {
+  e.preventDefault();
+  const idAviso = document.getElementById('despLinkedAvisoId').value;
+  const title = document.getElementById('despTitle').value.trim();
+  const preset = document.getElementById('despPreset').value;
+  const customVal = document.getElementById('despCustomAt').value;
+  const to = document.getElementById('despTo').value;
+  const reminderAt = computeReminderIso(preset, customVal);
+
+  const res = await fetch('/api/hub/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title,
+      desc: `Alarma programada desde SAT 2.0 para aviso vinculado.`,
+      from: state.authUser?.nombre || 'SAT 2.0',
+      to,
+      cat: 'SAT 2.0',
+      prio: 'alta',
+      status: 'pending',
+      reminderAt,
+      linkedAvisoId: idAviso,
+      sourceApp: 'SAT'
+    })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    closeModal('modalCrearDespertador');
+    alert('⏰ Despertador programado correctamente.');
+    pollDespertadorActivos();
+  } else {
+    alert('⚠️ ' + (data.error || 'No se pudo programar el despertador.'));
+  }
+}
+
+window.openBuzonAlertas = openBuzonAlertas;
+window.switchBuzonTab = switchBuzonTab;
+window.buzonQuickVerifySenal = buzonQuickVerifySenal;
+window.buzonQuickMarkPedido = buzonQuickMarkPedido;
+window.buzonOpenAviso = buzonOpenAviso;
+window.resolverBloqueoVerificar50 = resolverBloqueoVerificar50;
+window.resolverBloqueoForzar = resolverBloqueoForzar;
+window.openDespertadorDrawer = openDespertadorDrawer;
+window.toggleDespertadorSound = toggleDespertadorSound;
+window.snoozeDespertadorAlarm = snoozeDespertadorAlarm;
+window.openCrearDespertadorModal = openCrearDespertadorModal;
+window.onDespPresetChange = onDespPresetChange;
+window.submitCrearDespertadorAviso = submitCrearDespertadorAviso;
+
+// =========================================================================
+// FASE 1.5B + SYNC CONVERSACIÓN: ECONÓMICO PREVIO, HISTÓRICO, EXCEL CONTABLE,
+// PREVENTIVO ECOFOREST Y CHECKLIST ACCESORIOS (NOTA 7)
+// =========================================================================
+async function saveAvisoEconomico(idAviso) {
+  const pEl = document.getElementById(`editPrecioComunicado_${idAviso}`);
+  const stEl = document.getElementById(`editEstadoCobroPrevio_${idAviso}`);
+  const impEl = document.getElementById(`editImporteAbonado_${idAviso}`);
+  const metEl = document.getElementById(`editMetodoPagoPrevio_${idAviso}`);
+  const fecEl = document.getElementById(`editFechaPagoPrevio_${idAviso}`);
+  const payload = {
+    precioComunicado: pEl && pEl.value !== '' ? Number(pEl.value) : null,
+    estadoCobroPrevio: stEl ? stEl.value : 'PENDIENTE',
+    importeAbonadoPrevio: impEl ? Number(impEl.value || 0) : 0,
+    metodoPagoPrevio: metEl ? metEl.value : '',
+    fechaPagoPrevio: fecEl ? fecEl.value : ''
+  };
+  await quickUpdateAviso(idAviso, payload);
+  alert('💶 Datos económicos previos guardados correctamente.');
+}
+
+function getHistoricoFilterParams() {
+  return new URLSearchParams({
+    q: document.getElementById('histSearchInput')?.value || '',
+    estado: document.getElementById('histEstadoFilter')?.value || 'TODOS',
+    operario: document.getElementById('histOperarioFilter')?.value || 'TODOS',
+    tipoServicio: document.getElementById('histTipoServicioFilter')?.value || 'TODOS',
+    desde: document.getElementById('histDesdeInput')?.value || '',
+    hasta: document.getElementById('histHastaInput')?.value || '',
+    limit: '250'
+  });
+}
+
+async function renderHistoricoAdminSection() {
+  const el = document.getElementById('adminSectionHistorico');
+  if (!el) return;
+  const canExport = Boolean(state.authUser && state.authUser.canExportContable);
+
+  if (!document.getElementById('histSearchInput')) {
+    el.innerHTML = `
+      <div class="panel">
+        <div class="panel-header" style="flex-wrap:wrap;gap:10px;">
+          <h2>📚 Histórico General SAT (Pendientes y Finalizados)</h2>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="badge badge-blue" id="histCountBadge">0 registros</span>
+            ${canExport ? `<button type="button" class="btn btn-green" style="padding:7px 14px;font-size:12px;" onclick="exportContableCsv()">📥 Exportar Excel Contable (.csv)</button>` : ''}
+          </div>
+        </div>
+        <div class="panel-body">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+            <input type="search" id="histSearchInput" placeholder="🔍 Buscar nº aviso, cliente, teléfono, pueblo..." oninput="loadHistoricoSat()" style="flex:1;min-width:200px;" />
+            <select id="histEstadoFilter" onchange="loadHistoricoSat()">
+              <option value="TODOS">Todos los estados</option>
+              <option value="PENDIENTES">Solo Pendientes</option>
+              <option value="FINALIZADOS">Solo Finalizados</option>
+              <option value="FINALIZADO, PASAR ALIQUO">FINALIZADO, PASAR ALIQUO</option>
+            </select>
+            <select id="histTipoServicioFilter" onchange="loadHistoricoSat()">
+              <option value="TODOS">Todos los circuitos</option>
+              <option value="SAT">🔧 SAT</option>
+              <option value="MONTAJE_GOTERA">🏗️ Montajes / Goteras</option>
+            </select>
+            <select id="histOperarioFilter" onchange="loadHistoricoSat()">
+              <option value="TODOS">Todos los operarios</option>
+              <option value="JACOBO">JACOBO</option>
+              <option value="ALEX">ALEX</option>
+              <option value="DIONI">DIONI</option>
+              <option value="ROBERTO">ROBERTO</option>
+              <option value="ISMA">ISMA</option>
+              <option value="DANY">DANY</option>
+              <option value="JUAN">JUAN</option>
+            </select>
+            <input type="date" id="histDesdeInput" onchange="loadHistoricoSat()" title="Desde fecha entrada" />
+            <input type="date" id="histHastaInput" onchange="loadHistoricoSat()" title="Hasta fecha entrada" />
+          </div>
+          <div id="histTableWrap" style="overflow-x:auto;"></div>
+        </div>
+      </div>
+    `;
+  }
+  await loadHistoricoSat();
+}
+
+async function loadHistoricoSat() {
+  const wrap = document.getElementById('histTableWrap');
+  const badge = document.getElementById('histCountBadge');
+  if (!wrap) return;
+  const canCostes = Boolean(state.authUser && state.authUser.canSeeCostes);
+  const params = getHistoricoFilterParams();
+  const res = await apiFetch(`/api/sat/historico?${params}`);
+  const data = await res.json();
+  if (!data.ok) return;
+
+  const rows = data.rows || [];
+  if (badge) badge.textContent = `${data.total} registros`;
+  if (rows.length === 0) {
+    wrap.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted);">No hay intervenciones que coincidan con estos filtros.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Nº / Fecha</th>
+          <th>Cliente / Máquina</th>
+          <th>Intervención / Operario</th>
+          <th>Notas & Repuestos</th>
+          <th>Previo</th>
+          <th style="text-align:right;">Total PVP</th>
+          ${canCostes ? '<th style="text-align:right;">Neto / Margen</th>' : ''}
+          <th>Cobro</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(r => `
+          <tr>
+            <td>
+              <strong>#${r.numero}</strong> ${r.tipoServicio === 'MONTAJE_GOTERA' ? '<span class="badge badge-amber">🏗️</span>' : ''}<br>
+              <small style="color:var(--text-muted);">${escapeHtml(formatDateES(r.fechaEntrada))}</small><br>
+              ${r.fechaEjecucion ? `<small style="color:#34d399;">Ejec: ${escapeHtml(formatDateES(r.fechaEjecucion))}</small>` : ''}
+            </td>
+            <td>
+              <strong>${escapeHtml(r.clienteNombre || '-')}</strong> (${escapeHtml(r.poblacion || '')})<br>
+              <small style="color:var(--text-muted);">${escapeHtml(r.maquina || '-')}</small>
+            </td>
+            <td>
+              <span class="badge badge-blue">${escapeHtml(r.tipoIntervencion)}</span><br>
+              <small>👷 ${escapeHtml(r.operario)} · ${escapeHtml(r.estadoAviso)}</small>
+            </td>
+            <td style="max-width:260px;font-size:11px;">
+              ${r.observaciones ? `<div><strong>Ofic:</strong> ${escapeHtml(r.observaciones.slice(0, 80))}</div>` : ''}
+              ${r.notasTecnico ? `<div style="color:#93c5fd;"><strong>Téc:</strong> ${escapeHtml(r.notasTecnico.slice(0, 80))}</div>` : ''}
+              ${r.repuestosTexto ? `<div style="color:#fcd34d;"><strong>Rep:</strong> ${escapeHtml(r.repuestosTexto.slice(0, 80))}</div>` : ''}
+            </td>
+            <td style="font-size:11px;">
+              ${r.precioComunicado !== null ? `Acord: ${r.precioComunicado.toFixed(2)}€<br>` : ''}
+              ${r.importeAbonadoPrevio > 0 ? `<span style="color:#34d399;">Abon: ${r.importeAbonadoPrevio.toFixed(2)}€ (${escapeHtml(r.metodoPagoPrevio)})</span>` : '-'}
+            </td>
+            <td style="text-align:right;"><strong style="color:#34d399;">${r.totalFacturado.toFixed(2)} €</strong></td>
+            ${canCostes ? `<td style="text-align:right;font-size:11px;">Neto: ${(r.costeNetoRepuestos || 0).toFixed(2)}€<br><strong style="color:#fbbf24;">Mgn: ${(r.margenRepuestos || 0).toFixed(2)}€</strong></td>` : ''}
+            <td style="font-size:11px;">${escapeHtml(r.estadoCobro || 'PENDIENTE')}<br><small>${escapeHtml(r.formaCobro || '')}</small></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function exportContableCsv() {
+  const params = getHistoricoFilterParams();
+  window.open(withAuthToken(`/api/admin/export-contable?${params}`), '_blank');
+}
+
+const WA_TEMPLATES_CATALOG = [
+  {
+    id: 'ecoforest_verano',
+    label: '⚡ Aviso Preventivo Verano ECOFOREST',
+    buildMessage: ({ nombre, equipo }) =>
+      `Hola ${nombre || ''}, aviso preventivo de Baza Mazano S.L. para tu equipo ${equipo || 'ECOFOREST'}: durante el verano (cuando no vayas a utilizar la estufa/caldera) es muy importante desconectarla totalmente de la corriente eléctrica (desenchufar o bajar el térmico) para evitar quemar la placa electrónica por tormentas o picos de tensión.`
+  }
+];
+
+function buildWhatsappTemplateUrl(telefono, templateId, ctx = {}) {
+  const tel = String(telefono || '').replace(/\D/g, '');
+  const cleanPhone = tel.startsWith('34') ? tel : (tel.length === 9 ? `34${tel}` : tel);
+  const tpl = WA_TEMPLATES_CATALOG.find(t => t.id === templateId) || WA_TEMPLATES_CATALOG[0];
+  return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(tpl.buildMessage(ctx))}`;
+}
+
+async function openPreventivoEcoforestModal() {
+  const modal = document.getElementById('modalPreventivoEcoforest');
+  const listEl = document.getElementById('preventivoEcoforestList');
+  if (!modal || !listEl) return;
+  modal.classList.add('open');
+  listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);">Buscando clientes ECOFOREST...</div>`;
+  try {
+    const res = await apiFetch('/api/avisos?limit=500');
+    const data = await res.json();
+    const avisos = Array.isArray(data.avisos) ? data.avisos : (state.avisos || []);
+    const eco = avisos.filter(a => `${a.marca || ''} ${a.modelo || ''}`.toUpperCase().includes('ECOFOREST'));
+    if (eco.length === 0) {
+      listEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);">No se han encontrado avisos/clientes con marca o modelo ECOFOREST.</div>`;
+      return;
+    }
+    listEl.innerHTML = eco.map(a => {
+      const equipo = [a.marca, a.modelo].filter(Boolean).join(' ').trim();
+      const telClean = String(a.telefono1 || '').replace(/\D/g, '');
+      const waUrl = telClean ? buildWhatsappTemplateUrl(a.telefono1, 'ecoforest_verano', { nombre: a.nombreCliente || '', equipo }) : '';
+      return `
+        <div class="buzon-item-card">
+          <div>
+            <div style="font-weight:800;font-size:13.5px;">#${escapeHtml(String(a.numero || ''))} — ${escapeHtml(a.nombreCliente)} ${escapeHtml(a.apellidosCliente)}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">🔥 <strong>${escapeHtml(equipo)}</strong> · 📞 ${escapeHtml(a.telefono1 || 'Sin tel.')} · 📍 ${escapeHtml(a.poblacion || '')}</div>
+          </div>
+          <div>
+            ${waUrl ? `<a href="${waUrl}" target="_blank" class="btn btn-amber" style="font-size:11.5px;padding:6px 10px;text-decoration:none;">⚡ Enviar Aviso WA</a>` : `<span class="badge badge-red">Sin teléfono</span>`}
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    listEl.innerHTML = `<div style="padding:20px;text-align:center;color:#f87171;">Error cargando clientes ECOFOREST.</div>`;
+  }
+}
+
+function onChecklistAccesoriosChange() {
+  const anyChecked =
+    Boolean(document.getElementById('chkAccTRegistro')?.checked) ||
+    Boolean(document.getElementById('chkAccSombrerete')?.checked) ||
+    Boolean(document.getElementById('chkAccReduccion')?.checked) ||
+    Boolean(document.getElementById('chkAccTomaAire')?.checked) ||
+    Boolean(document.getElementById('newOtrosAccesorios')?.value.trim());
+  const selPedido = document.getElementById('newPedidoProveedorEstado');
+  if (anyChecked && selPedido && selPedido.value === 'NO_APLICA') {
+    selPedido.value = 'PENDIENTE';
+  }
+}
+
+window.saveAvisoEconomico = saveAvisoEconomico;
+window.loadHistoricoSat = loadHistoricoSat;
+window.exportContableCsv = exportContableCsv;
+window.openPreventivoEcoforestModal = openPreventivoEcoforestModal;
+window.onChecklistAccesoriosChange = onChecklistAccesoriosChange;
+window.renderRepuestosCatalogTable = renderRepuestosCatalogTable;

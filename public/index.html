@@ -58,6 +58,7 @@
   <!-- TOPBAR CON SELECTOR DE ROL (3 VISTAS PERSONALIZADAS) -->
   <header class="topbar">
     <div class="brand-block">
+      <a href="/" id="btnPortalBazaLink" style="display:none;align-items:center;gap:6px;background:rgba(255,255,255,0.15);color:#ffffff;text-decoration:none;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;margin-right:10px;border:1px solid rgba(255,255,255,0.3);">🏠 Portal Baza</a>
       <img src="/logo_bazamazano_oficial.png" alt="Baza Mazano Oficial" style="height:42px;max-width:140px;object-fit:contain;background:#ffffff;padding:3px 8px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15);" />
       <div class="brand-title">
         <h1>
@@ -81,6 +82,28 @@
     </div>
 
     <div class="topbar-actions">
+      <div id="buzonAlertasBar" class="buzon-semaforos-bar" title="Buzón de Alertas Operativas">
+        <button type="button" class="semaforo-pill semaforo-red" onclick="openBuzonAlertas('sinPlanning')" title="Contratos / Instalaciones sin fecha en Planning">
+          🔴 Sin Planning <strong id="buzonCountSinPlanning">0</strong>
+        </button>
+        <button type="button" class="semaforo-pill semaforo-yellow" onclick="openBuzonAlertas('pendienteSenal50')" title="Contratos pendientes de verificar señal 50%">
+          🟡 Señal 50% <strong id="buzonCountSenal50">0</strong>
+        </button>
+        <button type="button" class="semaforo-pill semaforo-blue" onclick="openBuzonAlertas('pedidosProveedor')" title="Pedidos a proveedor pendientes de enviar">
+          🔵 Pedir Prov. <strong id="buzonCountPedidos">0</strong>
+        </button>
+        <button type="button" class="semaforo-pill semaforo-orange" id="buzonBadgeRemates" onclick="openBuzonAlertas('rematesUrgentes')" style="display:none;" title="Remates / 2ª visita con cuenta atrás de 7 días">
+          ⏱️ Remates 7d <strong id="buzonCountRemates">0</strong>
+        </button>
+      </div>
+      <div class="despertador-widget">
+        <button type="button" class="btn btn-ghost despertador-bell-btn" id="btnDespertadorBell" onclick="openDespertadorDrawer()" title="Despertador de Tareas y Alertas Activas">
+          ⏰ <span id="despertadorBadge" class="despertador-badge" style="display:none;">0</span>
+        </button>
+        <button type="button" class="btn btn-ghost" id="btnDespertadorSound" onclick="toggleDespertadorSound()" title="Activar / Silenciar sonido del Despertador" style="font-size:13px;padding:6px 8px;">
+          🔊
+        </button>
+      </div>
       <span id="currentUserBadge" class="user-auth-pill" style="display:none;"></span>
       <button class="btn btn-ghost" id="btnSwitchUserPin" onclick="logoutPin()" title="Cambiar de usuario / cerrar sesión PIN" style="display:none;font-size:12px;padding:7px 10px;font-weight:700;">
         🔒 Cambiar
@@ -121,6 +144,9 @@
         <button class="tab-btn" id="mandoTabCatalogos" onclick="switchMandoTab('catalogos')">
           🔑 Marcas (PINs Reset), Repuestos y Tarifas 2026/2027
         </button>
+        <button type="button" class="btn btn-amber" style="padding:6px 12px;font-size:12px;" onclick="openPreventivoEcoforestModal()">
+          ⚡ Preventivo Verano Ecoforest
+        </button>
       </div>
 
       <div class="mando-filters-bar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
@@ -146,6 +172,11 @@
           <option value="oldest">⏳ Más antiguos primero (espera)</option>
           <option value="priority">🔥 Urgencia + Fuego primero</option>
         </select>
+        <select id="filterTipoServicioAviso" onchange="loadAvisosList()" title="Filtrar por Circuito de Servicio">
+          <option value="TODOS">🔀 Todos los Circuitos</option>
+          <option value="SAT">🔧 SAT Calderas y Estufas</option>
+          <option value="MONTAJE_GOTERA">🏗️ Montajes y Goteras (Dany/Juan)</option>
+        </select>
         <select id="filterOperarioAviso" onchange="loadAvisosList()">
           <option value="TODOS">👷 Todos los Operarios</option>
           <option value="JACOBO">🔵 JACOBO</option>
@@ -153,6 +184,8 @@
           <option value="DIONI">🟠 DIONI</option>
           <option value="ROBERTO">🟣 ROBERTO</option>
           <option value="ISMA">🟡 ISMA</option>
+          <option value="DANY">🏗️ DANY (Montajes/Goteras)</option>
+          <option value="JUAN">🏗️ JUAN (Montajes/Goteras)</option>
         </select>
       </div>
     </div>
@@ -242,6 +275,14 @@
             </div>
             <div class="panel-body" id="tarifasCatalogContainer"></div>
           </div>
+        </div>
+
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-header" style="flex-wrap:wrap;gap:10px;">
+            <h2>🔩 Catálogo Oficial de Repuestos (<span id="repuestosCatalogCount">0</span>)</h2>
+            <input type="text" id="repuestosCatalogSearch" placeholder="🔍 Buscar repuesto por código, descripción o marca..." oninput="renderRepuestosCatalogTable(this.value)" style="width:320px;max-width:100%;padding:7px 12px;font-size:12px;" />
+          </div>
+          <div class="panel-body" id="repuestosCatalogContainer" style="max-height:460px;overflow-y:auto;"></div>
         </div>
       </div>
 
@@ -340,11 +381,14 @@
           🛡️ 2. Contratos Mantenimiento (`CM26 / CM27` → Activar Avisos)
         </button>
         <button class="tab-btn" id="adminTabFlota" onclick="switchAdminTab('flota')">
-          🚐 3. Control de Flota (4 Furgonetas) y Rentabilidad
+          🚐 3. Control de Flota (8 Vehículos) y Rentabilidad
+        </button>
+        <button class="tab-btn" id="adminTabHistorico" onclick="switchAdminTab('historico')">
+          📚 4. Histórico General SAT & Excel Contable
         </button>
       </div>
       <div style="font-size:12px;color:#34d399;font-weight:700;">
-        ✨ Espacio limpio para Silvia y Lidia (Sin ruido de triaje técnico)
+        ✨ Espacio limpio para Silvia, Chus y Lydia
       </div>
     </div>
 
@@ -352,6 +396,7 @@
       <div id="adminSectionAliquo"></div>
       <div id="adminSectionContratos" style="display:none;"></div>
       <div id="adminSectionFlota" style="display:none;"></div>
+      <div id="adminSectionHistorico" style="display:none;"></div>
     </main>
   </section>
 
@@ -492,6 +537,13 @@
               </select>
             </div>
             <div class="field">
+              <label>Circuito de Servicio</label>
+              <select id="newTipoServicio">
+                <option value="SAT">🔧 SAT Calderas y Estufas</option>
+                <option value="MONTAJE_GOTERA">🏗️ Montaje / Reparación Goteras (Dany/Juan)</option>
+              </select>
+            </div>
+            <div class="field">
               <label>Operario Preasignado</label>
               <select id="newOperarioPreasignado">
                 <option value="JACOBO">JACOBO</option>
@@ -499,16 +551,122 @@
                 <option value="DIONI">DIONI</option>
                 <option value="ROBERTO">ROBERTO</option>
                 <option value="ISMA">ISMA</option>
+                <option value="DANY">DANY (Montajes/Goteras)</option>
+                <option value="JUAN">JUAN (Montajes/Goteras)</option>
               </select>
             </div>
-            <div class="field" id="newObservacionesAliquoWrap" style="grid-column: 1 / -1; display:none;">
-              <label style="color:#38bdf8;">📋 Historial Unificado "Varios" en Aliquo (Extraído automáticamente de la ficha del cliente)</label>
-              <textarea id="newObservacionesAliquo" rows="4" readonly style="background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.3);font-size:11.5px;color:var(--text);"></textarea>
+            <div class="field" id="newObservacionesAliquoWrap" style="grid-column: 1 / -1; display:none; flex-direction:column; align-items:stretch; width:100%;">
+              <label style="color:#38bdf8; margin-bottom:6px; display:block;">📋 Historial Unificado "Varios" en Aliquo (Extraído automáticamente de la ficha del cliente)</label>
+              <textarea id="newObservacionesAliquo" rows="6" readonly style="width:100%; min-height:150px; background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.35); font-size:12.5px; line-height:1.5; padding:10px 12px; color:var(--text); border-radius:8px; resize:vertical;"></textarea>
               <input type="hidden" id="newInstalacionBaza" />
             </div>
             <div class="field" style="grid-column: 1 / -1;">
               <label>Síntoma / Observaciones del Aviso y Horario Disponible</label>
               <textarea id="newObservaciones" rows="3" placeholder="Describe qué le ocurre a la máquina y disponibilidad horaria del cliente..."></textarea>
+            </div>
+
+            <!-- ALERTA CONTEXTUAL POR PALABRA CLAVE (NOTA 10) -->
+            <div id="keywordAlertBanner" class="keyword-alert-banner" style="grid-column: 1 / -1; display:none;"></div>
+
+            <!-- CONTROL OPERATIVO CONTRATO / LOGÍSTICA (REUNIÓN 12-NOV) -->
+            <div class="contrato-operativo-box" style="grid-column: 1 / -1;">
+              <div style="font-size:12px;font-weight:800;color:#fbbf24;margin-bottom:8px;">📋 Control Operativo Contrato / Logística (Buzón de Alertas)</div>
+              <div class="modal-grid-2" style="gap:10px;">
+                <label class="inline-check">
+                  <input type="checkbox" id="newEsContratoObra" />
+                  <span>Es Contrato / Obra</span>
+                </label>
+                <label class="inline-check">
+                  <input type="checkbox" id="newPago50Verificado" />
+                  <span>Pago Señal 50% Verificado</span>
+                </label>
+                <div class="field">
+                  <label>Modalidad Logística</label>
+                  <select id="newModalidadLogistica">
+                    <option value="INSTALACION">🔧 Instalación (Requiere Planning)</option>
+                    <option value="ENVIO_ALMACEN">📦 Logística / Envío (Almacén)</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Pedido a Proveedor</label>
+                  <select id="newPedidoProveedorEstado">
+                    <option value="NO_APLICA">NO APLICA</option>
+                    <option value="PENDIENTE">🔵 PENDIENTE DE PEDIR</option>
+                    <option value="PEDIDO_ENVIADO">📤 PEDIDO ENVIADO</option>
+                    <option value="RECIBIDO">✅ RECIBIDO EN NAVE</option>
+                  </select>
+                </div>
+                <label class="inline-check" style="grid-column: 1 / -1;">
+                  <input type="checkbox" id="newRematePendiente" />
+                  <span>⏱️ Falta Remate / 2ª Visita (Cuenta atrás 7 días)</span>
+                </label>
+
+                <!-- CHECKLIST AUTOMÁTICO DE ACCESORIOS / TUBERÍA (NOTA 7) -->
+                <div style="grid-column: 1 / -1; margin-top:6px; padding-top:10px; border-top:1px dashed rgba(251,191,36,0.35);">
+                  <div style="font-size:11.5px;font-weight:800;color:#60a5fa;margin-bottom:6px;">
+                    🔩 Checklist Accesorios / Tubería (Nota 7 — Marcar si <em>Falta pedir</em>)
+                  </div>
+                  <div class="modal-grid-2" style="gap:6px 12px;">
+                    <label class="inline-check">
+                      <input type="checkbox" id="chkAccTRegistro" onchange="onChecklistAccesoriosChange()" />
+                      <span>T de registro / condensados</span>
+                    </label>
+                    <label class="inline-check">
+                      <input type="checkbox" id="chkAccSombrerete" onchange="onChecklistAccesoriosChange()" />
+                      <span>Sombrerete / salida tejado</span>
+                    </label>
+                    <label class="inline-check">
+                      <input type="checkbox" id="chkAccReduccion" onchange="onChecklistAccesoriosChange()" />
+                      <span>Reducción / diámetro especial (80/100/150mm)</span>
+                    </label>
+                    <label class="inline-check">
+                      <input type="checkbox" id="chkAccTomaAire" onchange="onChecklistAccesoriosChange()" />
+                      <span>Kit toma de aire exterior / placa suelo</span>
+                    </label>
+                  </div>
+                  <div class="field" style="margin-top:8px;">
+                    <label>Otros accesorios especiales (Falta pedir)</label>
+                    <input type="text" id="newOtrosAccesorios" placeholder="Ej: Codo 45º vitrificado negro, rosetón especial..." oninput="onChecklistAccesoriosChange()" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- INFORMACIÓN ECONÓMICA PREVIA (FASE 1.5B) -->
+            <div class="contrato-operativo-box" style="grid-column: 1 / -1; border-color: rgba(16,185,129,0.35); background: rgba(16,185,129,0.05);">
+              <div style="font-size:12px;font-weight:800;color:#34d399;margin-bottom:8px;">💶 Información Económica Previa (Opcional — Visible para el Operario)</div>
+              <div class="modal-grid-2" style="gap:10px;">
+                <div class="field">
+                  <label>Precio Comunicado por Teléfono (€)</label>
+                  <input type="number" step="0.01" id="newPrecioComunicado" placeholder="Ej: 120.00" />
+                </div>
+                <div class="field">
+                  <label>Estado de Cobro Previo</label>
+                  <select id="newEstadoCobroPrevio">
+                    <option value="PENDIENTE">⏳ Pendiente de cobro</option>
+                    <option value="SENAL_PARCIAL">🟡 Abonado parcial / Señal</option>
+                    <option value="ABONADO_TOTAL">✅ Abonado total</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Importe Abonado Previamente (€)</label>
+                  <input type="number" step="0.01" id="newImporteAbonadoPrevio" placeholder="0.00" />
+                </div>
+                <div class="field">
+                  <label>Método y Fecha de Pago Previo</label>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                    <select id="newMetodoPagoPrevio">
+                      <option value="">-- Método --</option>
+                      <option value="EFECTIVO">Efectivo</option>
+                      <option value="TARJETA">Tarjeta</option>
+                      <option value="BIZUM">Bizum</option>
+                      <option value="TRANSFERENCIA">Transferencia</option>
+                      <option value="FINANCIACION">Financiación</option>
+                    </select>
+                    <input type="date" id="newFechaPagoPrevio" />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -842,7 +1000,139 @@
     </div>
   </div>
 
+  <!-- =================================================================== -->
+  <!-- MODAL BUZÓN DE ALERTAS OPERATIVAS (3 SEMÁFOROS + REMATES 7D)        -->
+  <!-- =================================================================== -->
+  <div class="modal-backdrop" id="modalBuzonAlertas">
+    <div class="modal-card" style="max-width:860px;">
+      <div class="panel-header">
+        <h2>🚨 Buzón de Alertas Operativas</h2>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modalBuzonAlertas')">✕</button>
+      </div>
+      <div class="panel-body">
+        <div class="buzon-tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+          <button type="button" class="tab-btn active" id="buzonTab_sinPlanning" onclick="switchBuzonTab('sinPlanning')">🔴 Sin Planning (<span id="buzonTabCount_sinPlanning">0</span>)</button>
+          <button type="button" class="tab-btn" id="buzonTab_pendienteSenal50" onclick="switchBuzonTab('pendienteSenal50')">🟡 Señal 50% (<span id="buzonTabCount_pendienteSenal50">0</span>)</button>
+          <button type="button" class="tab-btn" id="buzonTab_pedidosProveedor" onclick="switchBuzonTab('pedidosProveedor')">🔵 Pedir Proveedor (<span id="buzonTabCount_pedidosProveedor">0</span>)</button>
+          <button type="button" class="tab-btn" id="buzonTab_rematesUrgentes" onclick="switchBuzonTab('rematesUrgentes')">⏱️ Remates 7d (<span id="buzonTabCount_rematesUrgentes">0</span>)</button>
+        </div>
+        <div id="buzonAlertasList" style="max-height:460px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =================================================================== -->
+  <!-- MODAL DESPERTADOR DE TAREAS Y ALERTAS                               -->
+  <!-- =================================================================== -->
+  <div class="modal-backdrop" id="modalDespertadorAlarma">
+    <div class="modal-card" style="max-width:620px;">
+      <div class="panel-header">
+        <h2>⏰ Despertador Operativo</h2>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modalDespertadorAlarma')">✕</button>
+      </div>
+      <div class="panel-body">
+        <div id="despertadorAlarmsList" style="max-height:420px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =================================================================== -->
+  <!-- MODAL CREAR DESPERTADOR VINCULADO A AVISO                           -->
+  <!-- =================================================================== -->
+  <div class="modal-backdrop" id="modalCrearDespertador">
+    <div class="modal-card" style="max-width:480px;">
+      <div class="panel-header">
+        <h2>⏰ Programar Despertador para Aviso</h2>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modalCrearDespertador')">✕</button>
+      </div>
+      <form onsubmit="submitCrearDespertadorAviso(event)" class="panel-body" style="display:flex;flex-direction:column;gap:12px;">
+        <input type="hidden" id="despLinkedAvisoId" />
+        <div class="field">
+          <label>Título de la Alarma</label>
+          <input type="text" id="despTitle" required />
+        </div>
+        <div class="field">
+          <label>Cuándo sonar</label>
+          <select id="despPreset" onchange="onDespPresetChange(this.value)">
+            <option value="1h">⏱️ En 1 hora</option>
+            <option value="hoy17">🕔 Hoy a las 17:00</option>
+            <option value="manana9">🌅 Mañana a las 09:00</option>
+            <option value="custom">📅 Fecha y hora personalizada</option>
+          </select>
+        </div>
+        <div class="field" id="despCustomWrap" style="display:none;">
+          <label>Fecha y hora</label>
+          <input type="datetime-local" id="despCustomAt" />
+        </div>
+        <div class="field">
+          <label>Asignar a (Hub)</label>
+          <select id="despTo">
+            <option value="Silvia">Silvia</option>
+            <option value="Jacobo">Jacobo</option>
+            <option value="Leandro">Leandro</option>
+            <option value="Chus">Chus</option>
+            <option value="Rosa">Rosa</option>
+            <option value="Lydia">Lydia</option>
+            <option value="Todos">Todos</option>
+          </select>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <button type="button" class="btn btn-ghost" onclick="closeModal('modalCrearDespertador')">Cancelar</button>
+          <button type="submit" class="btn btn-primary">⏰ Programar Alarma</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- =================================================================== -->
+  <!-- MODAL BLOQUEO SEÑAL 50% EN DESPACHADOR DE CITAS (NOTA 5)            -->
+  <!-- =================================================================== -->
+  <div class="modal-backdrop" id="modalBloqueoSenal50">
+    <div class="modal-card danger-modal" style="max-width:520px;">
+      <div class="panel-header">
+        <h2>🟡 Bloqueo Operativo: Señal 50% No Verificada</h2>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modalBloqueoSenal50')">✕</button>
+      </div>
+      <div class="panel-body">
+        <p id="bloqueoSenal50Msg" style="font-size:13.5px;line-height:1.5;margin-bottom:16px;">
+          Este contrato de instalación no tiene verificado el pago inicial del 50%. Según protocolo operativo, no se puede agendar montaje sin señal.
+        </p>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <button type="button" class="btn btn-green" onclick="resolverBloqueoVerificar50()">
+            ✅ Verificar 50% ahora y agendar
+          </button>
+          <button type="button" class="btn btn-orange" onclick="resolverBloqueoForzar()">
+            ⚠️ Forzar (Solo Dirección — deja rastro de auditoría)
+          </button>
+          <button type="button" class="btn btn-ghost" onclick="closeModal('modalBloqueoSenal50')">
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =================================================================== -->
+  <!-- MODAL PREVENTIVO VERANO ECOFOREST (NOTA 3)                          -->
+  <!-- =================================================================== -->
+  <div class="modal-backdrop" id="modalPreventivoEcoforest">
+    <div class="modal-card" style="max-width:780px;">
+      <div class="panel-header">
+        <h2>⚡ Aviso Preventivo Verano ECOFOREST (Desconectar Placa)</h2>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modalPreventivoEcoforest')">✕ Cerrar</button>
+      </div>
+      <div class="panel-body">
+        <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:8px;padding:10px 12px;font-size:12.5px;margin-bottom:12px;color:#fcd34d;">
+          ⚡ <strong>Protocolo Preventivo Ecoforest:</strong> Recordar al cliente desconectar la máquina de la corriente eléctrica durante el verano para evitar quemar la placa electrónica por tormentas o picos de tensión.
+        </div>
+        <div id="preventivoEcoforestList" style="display:flex;flex-direction:column;gap:8px;max-height:460px;overflow-y:auto;">
+          <div style="padding:20px;text-align:center;color:var(--text-muted);">Cargando clientes ECOFOREST...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/app.js?v=20261113c"></script>
+  <script src="/app.js?v=20261116a"></script>
 </body>
 </html>
