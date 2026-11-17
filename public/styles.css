@@ -1501,3 +1501,51 @@ body.light-theme .despertador-toast {
   background: #ffffff;
   color: #0f172a;
 }
+
+/* MÓVIL EN HORIZONTAL (LANDSCAPE): CABECERA COMPACTA Y SIN STICKY PARA NO TAPAR DATOS */
+@media (max-height: 540px) and (orientation: landscape), (max-width: 960px) and (max-height: 540px) {
+  .topbar {
+    position: static !important;
+    padding: 6px 12px !important;
+    gap: 6px !important;
+    flex-wrap: wrap !important;
+  }
+  .brand p {
+    display: none !important;
+  }
+  .brand img, .brand-logo {
+    height: 28px !important;
+  }
+  .role-switcher {
+    padding: 2px !important;
+  }
+  .role-btn {
+    padding: 5px 8px !important;
+    font-size: 11px !important;
+  }
+  .topbar-actions {
+    gap: 4px !important;
+    flex-wrap: wrap !important;
+  }
+  .topbar-actions .btn,
+  .topbar-actions .buzon-pill,
+  .topbar-actions select {
+    padding: 4px 8px !important;
+    font-size: 11px !important;
+  }
+  .subnav {
+    position: static !important;
+    padding: 6px 12px !important;
+    gap: 6px !important;
+  }
+  .kpi-strip {
+    padding: 6px 12px !important;
+    gap: 6px !important;
+  }
+  .kpi-card {
+    padding: 6px 10px !important;
+  }
+  .kpi-card .val {
+    font-size: 18px !important;
+  }
+}
