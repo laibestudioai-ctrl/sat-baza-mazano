@@ -58,8 +58,9 @@
   <!-- TOPBAR CON SELECTOR DE ROL (3 VISTAS PERSONALIZADAS) -->
   <header class="topbar">
     <div class="brand-block">
-      <a href="/" id="btnPortalBazaLink" style="display:none;align-items:center;gap:6px;background:rgba(255,255,255,0.15);color:#ffffff;text-decoration:none;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;margin-right:10px;border:1px solid rgba(255,255,255,0.3);">🏠 Portal Baza</a>
-      <img src="/logo_bazamazano_oficial.png" alt="Baza Mazano Oficial" style="height:42px;max-width:140px;object-fit:contain;background:#ffffff;padding:3px 8px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15);" />
+      <a href="/" id="btnPortalBazaLink" title="Volver al Portal Baza Mazano" style="display:inline-flex;align-items:center;text-decoration:none;cursor:pointer;">
+        <img src="/logo_bazamazano_oficial.png" alt="Baza Mazano Oficial" style="height:42px;max-width:140px;object-fit:contain;background:#ffffff;padding:3px 8px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15);" />
+      </a>
       <div class="brand-title">
         <h1>
           SAT BAZA MAZANO 2.0
@@ -386,6 +387,9 @@
         <button class="tab-btn" id="adminTabHistorico" onclick="switchAdminTab('historico')">
           📚 4. Histórico General SAT & Excel Contable
         </button>
+        <button class="tab-btn" id="adminTabRentabilidad" onclick="switchAdminTab('rentabilidad')" style="display:none;">
+          💰 5. Costes Reales y Fugas SAT
+        </button>
       </div>
       <div style="font-size:12px;color:#34d399;font-weight:700;">
         ✨ Espacio limpio para Silvia, Chus y Lydia
@@ -397,6 +401,7 @@
       <div id="adminSectionContratos" style="display:none;"></div>
       <div id="adminSectionFlota" style="display:none;"></div>
       <div id="adminSectionHistorico" style="display:none;"></div>
+      <div id="adminSectionRentabilidad" style="display:none;"></div>
     </main>
   </section>
 
@@ -1133,6 +1138,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/app.js?v=20261116a"></script>
+  <script src="/app.js?v=20261120a"></script>
 </body>
 </html>
