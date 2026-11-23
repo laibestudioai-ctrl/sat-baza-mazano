@@ -118,6 +118,8 @@ function applyAuthUserUi() {
   if (btnMando) btnMando.style.display = roles.includes('mando') ? '' : 'none';
   if (btnTec) btnTec.style.display = roles.includes('tecnico') ? '' : 'none';
   if (btnAdmin) btnAdmin.style.display = (user.canSeeAdmin && roles.includes('admin')) ? '' : 'none';
+  const tabRent = document.getElementById('adminTabRentabilidad');
+  if (tabRent) tabRent.style.display = user.canSeeCostes ? '' : 'none';
 
   if (techSelect) {
     if (user.lockedTechEmail) {
@@ -2183,12 +2185,16 @@ function switchAdminTab(tab) {
   document.getElementById('adminTabFlota').classList.toggle('active', tab === 'flota');
   const histTab = document.getElementById('adminTabHistorico');
   if (histTab) histTab.classList.toggle('active', tab === 'historico');
+  const rentTab = document.getElementById('adminTabRentabilidad');
+  if (rentTab) rentTab.classList.toggle('active', tab === 'rentabilidad');
 
   document.getElementById('adminSectionAliquo').style.display = tab === 'aliquo' ? 'block' : 'none';
   document.getElementById('adminSectionContratos').style.display = tab === 'contratos' ? 'block' : 'none';
   document.getElementById('adminSectionFlota').style.display = tab === 'flota' ? 'block' : 'none';
   const histSec = document.getElementById('adminSectionHistorico');
   if (histSec) histSec.style.display = tab === 'historico' ? 'block' : 'none';
+  const rentSec = document.getElementById('adminSectionRentabilidad');
+  if (rentSec) rentSec.style.display = tab === 'rentabilidad' ? 'block' : 'none';
 
   renderAdminView();
 }
@@ -2484,6 +2490,8 @@ async function renderAdminView() {
     `;
   } else if (state.adminTab === 'historico') {
     await renderHistoricoAdminSection();
+  } else if (state.adminTab === 'rentabilidad') {
+    await renderRentabilidadAdminSection();
   }
 }
 
@@ -2499,25 +2507,169 @@ async function markAsPasadoAliquo(idAviso) {
 }
 
 async function volcarAlbaranDirectoAliquo(idAviso, numero) {
+  await openVolcadoAliquoModal(idAviso, numero);
+}
+
+async function openVolcadoAliquoModal(idAviso, numero, customSerial = '') {
+  const modal = document.getElementById('modalVolcadoAliquo');
+  const titleEl = document.getElementById('aliquoPreviewTitle');
+  const bodyEl = document.getElementById('aliquoPreviewBody');
+  if (!modal || !bodyEl) return;
+
+  if (titleEl) titleEl.textContent = `🚀 Vista Previa Volcado Real a Aliquo — Aviso #${numero || idAviso}`;
+  bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted);">Consultando cliente y líneas en Aliquo API...</div>';
+  modal.classList.add('open');
+
+  try {
+    const qs = new URLSearchParams({ idAviso: String(idAviso || numero) });
+    if (customSerial) qs.set('serialCode', customSerial);
+    const res = await apiFetch(`/api/aliquo/preview-volcado?${qs}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      bodyEl.innerHTML = `<div style="padding:18px;color:#fca5a5;">❌ ${escapeHtml(data.error || 'Error cargando vista previa')}</div>`;
+      return;
+    }
+    const p = data.preview;
+    const lines = (p.notePayload && p.notePayload.lines) || [];
+
+    bodyEl.innerHTML = `
+      ${p.yaVolcadoReal ? `
+        <div style="background:rgba(239,68,68,0.15);border:1px solid #ef4444;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:#fecaca;">
+          ⚠️ <strong>ATENCIÓN (Anti-duplicados):</strong> Este aviso ya fue volcado a Aliquo como <strong>${escapeHtml(p.aliquoDocPrevio || String(p.aliquoIdNotaPrevio || ''))}</strong>.
+        </div>
+      ` : ''}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;padding:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;">
+        <div>
+          <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;font-weight:700;">Cliente en Aliquo</div>
+          <div style="font-size:14px;font-weight:800;margin-top:2px;">[${escapeHtml(p.clienteCodigo)}] ${escapeHtml(p.clienteNombre)}</div>
+          <div style="margin-top:4px;">
+            ${p.clienteExisteEnAliquo
+              ? '<span class="badge badge-green">✅ Cliente existente en Aliquo</span>'
+              : '<span class="badge badge-amber">🆕 Pre-Alta — Se creará en Clientes de Aliquo</span>'}
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;font-weight:700;display:block;margin-bottom:4px;">Serie de Albarán Aliquo (Editable)</label>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input type="text" id="aliquoSerialInput" value="${escapeHtml(p.serialCode)}" style="width:110px;font-weight:800;text-transform:uppercase;" />
+            <span class="badge badge-blue">Almacén: Alm · IVA Inc.</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Total Albarán: <strong style="color:#34d399;font-size:13px;">${Number(p.totalImporte).toFixed(2)} €</strong></div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <div style="font-size:12px;font-weight:800;color:#fb923c;margin-bottom:6px;">📦 Líneas que entrarán en el Albarán (SalesDeliveryNote)</div>
+        <table class="data-table">
+          <thead>
+            <tr><th>Código</th><th>Concepto</th><th style="text-align:right;">Uds</th><th style="text-align:right;">PVP (IVA inc.)</th><th style="text-align:right;">Subtotal</th></tr>
+          </thead>
+          <tbody>
+            ${lines.map(l => `
+              <tr>
+                <td><span class="badge badge-blue">${escapeHtml(l.code)}</span></td>
+                <td>${escapeHtml(l.name)}</td>
+                <td style="text-align:right;">${Number(l.quantity)}</td>
+                <td style="text-align:right;">${Number(l.retailPrice).toFixed(2)} €</td>
+                <td style="text-align:right;"><strong>${(Number(l.quantity) * Number(l.retailPrice)).toFixed(2)} €</strong></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <label style="font-size:12px;font-weight:800;color:#38bdf8;display:block;margin-bottom:4px;">📋 Bloque que se añadirá al campo "Varios" (Observaciones) sin borrar historial previo:</label>
+        <textarea id="aliquoBloqueVariosInput" rows="4" style="width:100%;font-size:12px;font-family:inherit;">${escapeHtml(p.bloqueAnexarVarios)}</textarea>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="aliquoChkActualizarVarios" checked />
+            Actualizar campo "Varios" en ficha del cliente
+          </label>
+          ${!p.clienteExisteEnAliquo ? `
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="aliquoChkCrearCliente" checked />
+              Crear cliente nuevo en Aliquo
+            </label>
+          ` : ''}
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--border);">
+        <button type="button" class="btn btn-ghost" onclick="confirmarVolcadoAliquo('${escapeHtml(p.idAviso)}', ${p.numero}, false)">
+          💾 Solo marcar local (sin enviar a Aliquo)
+        </button>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="btn btn-ghost" onclick="closeModal('modalVolcadoAliquo')">Cancelar</button>
+          <button type="button" class="btn btn-green" id="btnConfirmarVolcadoReal" ${p.yaVolcadoReal ? 'disabled' : ''} onclick="confirmarVolcadoAliquo('${escapeHtml(p.idAviso)}', ${p.numero}, true)">
+            🚀 Confirmar y Volcar REAL a Aliquo API
+          </button>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    bodyEl.innerHTML = `<div style="padding:18px;color:#fca5a5;">❌ Error de conexión: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function confirmarVolcadoAliquo(idAviso, numero, modoReal) {
+  if (modoReal) {
+    const ok = confirm(`¿Confirmas crear el Albarán REAL en Aliquo ERP para el Aviso #${numero}?`);
+    if (!ok) return;
+  }
+  const btn = document.getElementById('btnConfirmarVolcadoReal');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Volcando a Aliquo...'; }
+
+  const serialCode = (document.getElementById('aliquoSerialInput')?.value || '').trim().toUpperCase();
+  const bloqueAnexarVarios = document.getElementById('aliquoBloqueVariosInput')?.value || '';
+  const actualizarVarios = Boolean(document.getElementById('aliquoChkActualizarVarios')?.checked);
+  const crearClienteSiNoExiste = document.getElementById('aliquoChkCrearCliente')
+    ? Boolean(document.getElementById('aliquoChkCrearCliente').checked)
+    : false;
+
   try {
     const res = await apiFetch('/api/aliquo/volcar-albaran', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idAviso, numero })
+      body: JSON.stringify({
+        idAviso,
+        numero,
+        modoReal: Boolean(modoReal),
+        serialCode,
+        bloqueAnexarVarios,
+        actualizarVarios,
+        crearClienteSiNoExiste
+      })
     });
     const data = await res.json();
-    if (data.ok) {
-      alert(`📦 ALBARÁN PREPARADO EN COLA ALIQUO:\n\n• Ref. Albarán SAT: ${data.albaran.idAlbaran}\n• Cliente: ${data.albaran.clienteNombre}\n• Total Albarán: ${Number(data.albaran.totalImporte).toFixed(2)} €\n• Líneas creadas: ${data.albaran.lineas.length}\n\nEl aviso ha pasado a estado [PASADO ALIQUO] (cola lista para volcado en Fase 2).`);
+    if (res.ok && data.ok) {
+      closeModal('modalVolcadoAliquo');
+      if (data.modoReal) {
+        alert(
+          `✅ ALBARÁN REAL CREADO EN ALIQUO ERP\n\n` +
+          `• Documento Aliquo: ${data.aliquoDoc} (ID #${data.aliquoIdNota || '-'})\n` +
+          `• Cliente creado: ${data.clienteCreadoReal ? 'SÍ (Alta en Clientes)' : 'Ya existía'}\n` +
+          `• Campo "Varios" actualizado: ${data.variosActualizado ? 'SÍ (Oficina + Técnico)' : ('NO' + (data.variosError ? ' — ' + data.variosError : ''))}`
+        );
+      } else {
+        alert(`💾 Marcado en local como [PASADO ALIQUO] (Ref: ${data.albaran.idAlbaran}) sin enviar a Aliquo API.`);
+      }
       await loadAvisosList();
       renderAdminView();
       renderAdminKpis();
     } else {
-      alert(`Error al preparar albarán: ${data.error || 'Desconocido'}`);
+      alert(`❌ Error en volcado Aliquo: ${data.error || 'Desconocido'}`);
+      if (btn) { btn.disabled = false; btn.textContent = '🚀 Confirmar y Volcar REAL a Aliquo API'; }
     }
   } catch (e) {
-    alert(`Error de conexión con servidor SAT: ${e.message}`);
+    alert(`❌ Error de conexión: ${e.message}`);
+    if (btn) { btn.disabled = false; btn.textContent = '🚀 Confirmar y Volcar REAL a Aliquo API'; }
   }
 }
+
+window.openVolcadoAliquoModal = openVolcadoAliquoModal;
+window.confirmarVolcadoAliquo = confirmarVolcadoAliquo;
 
 async function activarContratoCmIndividual(idContrato) {
   const res = await apiFetch('/api/contratos-cm/activar', {
@@ -3743,3 +3895,306 @@ window.exportContableCsv = exportContableCsv;
 window.openPreventivoEcoforestModal = openPreventivoEcoforestModal;
 window.onChecklistAccesoriosChange = onChecklistAccesoriosChange;
 window.renderRepuestosCatalogTable = renderRepuestosCatalogTable;
+
+// =========================================================================
+// MÓDULO DE COSTES REALES Y RENTABILIDAD SAT (REEMPLAZO EXCEL SILVIA)
+// =========================================================================
+let rentFilters = {
+  desde: '',
+  hasta: '',
+  operario: 'TODOS',
+  fuga: 'TODAS',
+  soloFinalizados: '1',
+  q: ''
+};
+
+async function renderRentabilidadAdminSection() {
+  const el = document.getElementById('adminSectionRentabilidad');
+  if (!el) return;
+  if (!state.authUser || !state.authUser.canSeeCostes) {
+    el.innerHTML = `<div class="panel"><div class="panel-body" style="padding:24px;color:#f87171;">🔒 Acceso restringido a usuarios con permiso de costes reales.</div></div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-header" style="flex-wrap:wrap;gap:10px;">
+        <h2>💰 Control de Costes Reales y Radar de Fugas SAT</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost" onclick="toggleRentConfigPanel()" style="font-size:12px;">⚙️ Tarifas Coste/h & Furgonetas</button>
+          <button class="btn btn-amber" onclick="toggleRentGastoPanel()" style="font-size:12px;">➕ Registrar Gasto / Gasolina</button>
+          <button class="btn btn-primary" onclick="loadRentabilidadData()" style="font-size:12px;">🔄 Actualizar</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px;">
+          <div class="field"><label>Desde</label><input type="date" id="rentDesde" value="${escapeHtml(rentFilters.desde)}" onchange="rentFilters.desde=this.value;loadRentabilidadData()" /></div>
+          <div class="field"><label>Hasta</label><input type="date" id="rentHasta" value="${escapeHtml(rentFilters.hasta)}" onchange="rentFilters.hasta=this.value;loadRentabilidadData()" /></div>
+          <div class="field"><label>Operario</label>
+            <select id="rentOperario" onchange="rentFilters.operario=this.value;loadRentabilidadData()">
+              <option value="TODOS">Todos</option>
+              <option value="JACOBO">Jacobo (51 €/h)</option>
+              <option value="ALEX">Alex (24,24 €/h)</option>
+              <option value="ROBERTO">Roberto (25,54 €/h)</option>
+              <option value="DIONI">Dioni (24 €/h)</option>
+              <option value="ISMA">Isma (24,24 €/h)</option>
+            </select>
+          </div>
+          <div class="field"><label>Tipo Fuga</label>
+            <select id="rentFuga" onchange="rentFilters.fuga=this.value;loadRentabilidadData()">
+              <option value="TODAS">Todas las órdenes</option>
+              <option value="MARGEN_NEGATIVO">🔴 En pérdidas (&lt; 0€)</option>
+              <option value="SEGUNDA_VISITA">🔁 Segundas visitas (&gt; 1)</option>
+              <option value="GARANTIA_DEFICITARIA">🛡️ Garantías deficitarias</option>
+              <option value="DESPLAZAMIENTO_CARO">🚐 Desplazamiento caro (&gt;40%)</option>
+            </select>
+          </div>
+          <div class="field"><label>Estado</label>
+            <select id="rentSoloFin" onchange="rentFilters.soloFinalizados=this.value;loadRentabilidadData()">
+              <option value="1" ${rentFilters.soloFinalizados === '1' ? 'selected' : ''}>Solo Finalizados / Aliquo</option>
+              <option value="0" ${rentFilters.soloFinalizados === '0' ? 'selected' : ''}>Todos (incl. en curso)</option>
+            </select>
+          </div>
+          <div class="field"><label>Buscar</label><input type="text" id="rentQ" placeholder="Aviso, cliente, pueblo..." value="${escapeHtml(rentFilters.q)}" oninput="rentFilters.q=this.value;loadRentabilidadData()" /></div>
+        </div>
+
+        <div id="rentConfigPanel" style="display:none;background:rgba(15,23,42,0.55);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;"></div>
+        <div id="rentGastoPanel" style="display:none;background:rgba(15,23,42,0.55);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;"></div>
+
+        <div id="rentKpisContainer" style="margin-bottom:14px;">Cargando escandallo...</div>
+        <div id="rentBreakdownContainer" style="margin-bottom:14px;"></div>
+        <div id="rentTableContainer" style="overflow-x:auto;"></div>
+      </div>
+    </div>
+  `;
+
+  await loadRentabilidadData();
+}
+
+async function loadRentabilidadData() {
+  const params = new URLSearchParams();
+  if (rentFilters.desde) params.set('desde', rentFilters.desde);
+  if (rentFilters.hasta) params.set('hasta', rentFilters.hasta);
+  if (rentFilters.operario !== 'TODOS') params.set('operario', rentFilters.operario);
+  if (rentFilters.fuga !== 'TODAS') params.set('fuga', rentFilters.fuga);
+  if (rentFilters.soloFinalizados === '1') params.set('soloFinalizados', '1');
+  if (rentFilters.q) params.set('q', rentFilters.q);
+
+  const res = await apiFetch('/api/admin/rentabilidad?' + params.toString());
+  const data = await res.json();
+  if (!data.ok) {
+    document.getElementById('rentKpisContainer').innerHTML = `<div style="color:#f87171;">${escapeHtml(data.error || 'Error cargando rentabilidad')}</div>`;
+    return;
+  }
+
+  const k = data.kpis;
+  const fmt = (n) => Number(n || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+  const benColor = k.totalBeneficio >= 0 ? '#34d399' : '#f87171';
+
+  document.getElementById('rentKpisContainer').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin-bottom:12px;">
+      <div class="kpi-card"><div class="kpi-label">Avisos Analizados</div><div class="kpi-value">${k.totalAvisos}</div><div class="kpi-sub">Bruto: ${fmt(k.totalIngresosBrutos)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Ingresos Netos (sin IVA)</div><div class="kpi-value" style="color:#60a5fa;">${fmt(k.totalIngresosNetos)}</div><div class="kpi-sub">Base real de cálculo</div></div>
+      <div class="kpi-card"><div class="kpi-label">Coste Real Total</div><div class="kpi-value" style="color:#fbbf24;">${fmt(k.totalCosteReal)}</div><div class="kpi-sub">MO + Viaje + 20€ Adm + Piezas</div></div>
+      <div class="kpi-card"><div class="kpi-label">Beneficio Neto Real</div><div class="kpi-value" style="color:${benColor};">${fmt(k.totalBeneficio)}</div><div class="kpi-sub">Margen real: <strong>${k.margenGlobalPct}%</strong></div></div>
+      <div class="kpi-card"><div class="kpi-label">Dinero Fugado (Pérdidas)</div><div class="kpi-value" style="color:#f87171;">-${fmt(k.dineroFugadoPerdidas)}</div><div class="kpi-sub">Gastos extra flota/prov: ${fmt(k.totalGastosExtra)}</div></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-ghost" style="font-size:12px;border-color:#ef4444;" onclick="setRentFugaFilter('MARGEN_NEGATIVO')">🔴 En pérdidas: <strong>${k.fugas.margenNegativo}</strong></button>
+      <button class="btn btn-ghost" style="font-size:12px;border-color:#f59e0b;" onclick="setRentFugaFilter('SEGUNDA_VISITA')">🔁 Segundas visitas: <strong>${k.fugas.segundasVisitas}</strong></button>
+      <button class="btn btn-ghost" style="font-size:12px;border-color:#a855f7;" onclick="setRentFugaFilter('GARANTIA_DEFICITARIA')">🛡️ Garantías en pérdidas: <strong>${k.fugas.garantiasDeficitarias}</strong></button>
+      <button class="btn btn-ghost" style="font-size:12px;border-color:#3b82f6;" onclick="setRentFugaFilter('DESPLAZAMIENTO_CARO')">🚐 Viaje caro (&gt;40%): <strong>${k.fugas.desplazamientosCaros}</strong></button>
+      <button class="btn btn-ghost" style="font-size:12px;" onclick="setRentFugaFilter('TODAS')">🧹 Ver todos</button>
+    </div>
+  `;
+
+  const renderMiniTable = (title, rows) => `
+    <div style="background:rgba(15,23,42,0.35);border:1px solid var(--border);border-radius:10px;padding:10px;overflow-x:auto;">
+      <h4 style="margin:0 0 8px;font-size:13px;">${title}</h4>
+      <table class="data-table" style="font-size:12px;">
+        <thead><tr><th>Concepto</th><th>Avisos</th><th>Neto</th><th>Coste</th><th>Beneficio</th><th>Margen</th></tr></thead>
+        <tbody>
+          ${(rows || []).slice(0, 8).map(r => `
+            <tr>
+              <td><strong>${escapeHtml(r.key)}</strong></td>
+              <td>${r.avisos}</td>
+              <td>${fmt(r.ingresosNetos)}</td>
+              <td>${fmt(r.costeReal)}</td>
+              <td style="color:${r.beneficio >= 0 ? '#34d399' : '#f87171'};font-weight:800;">${fmt(r.beneficio)}</td>
+              <td>${r.margenPct}%</td>
+            </tr>
+          `).join('') || '<tr><td colspan="6" style="color:var(--text-muted);">Sin datos</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  document.getElementById('rentBreakdownContainer').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;">
+      ${renderMiniTable('📊 Por Tipo de Intervención', data.porTipo)}
+      ${renderMiniTable('👷 Por Técnico', data.porOperario)}
+      ${renderMiniTable('📍 Pueblos con más Pérdidas', data.porPoblacion)}
+    </div>
+  `;
+
+  document.getElementById('rentTableContainer').innerHTML = `
+    <table class="data-table" style="font-size:12px;">
+      <thead>
+        <tr>
+          <th>Aviso</th><th>Fecha</th><th>Cliente / Pueblo</th><th>Tipo</th><th>Estado</th><th>Técnico</th>
+          <th>Visitas / Tiempo</th><th>Km</th><th>Neto s/IVA</th>
+          <th>MO Trab.</th><th>MO Viaje</th><th>Vehículo</th><th>Oficina</th><th>Piezas</th>
+          <th>Coste Real</th><th>Beneficio Real</th><th>Fugas</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${(data.items || []).map(it => {
+          const flagsHtml = (it.flagsFuga || []).map(f => `<span class="badge badge-red" style="font-size:10px;margin:1px;">${escapeHtml(f)}</span>`).join(' ');
+          const estUp = String(it.estadoAviso || '').toUpperCase();
+          const estBadge = estUp.includes('SIN ALIQUO')
+            ? `<span class="badge badge-red" style="font-size:10px;">${escapeHtml(it.estadoAviso)}</span>`
+            : `<span class="badge badge-blue" style="font-size:10px;">${escapeHtml(it.estadoAviso)}</span>`;
+          return `
+            <tr>
+              <td><strong>#${escapeHtml(String(it.numero || ''))}</strong></td>
+              <td>${escapeHtml(String(it.fecha || '').slice(0, 10))}</td>
+              <td><div>${escapeHtml(it.clienteNombre || '')}</div><div style="color:var(--text-muted);font-size:11px;">${escapeHtml(it.poblacion || '')}</div></td>
+              <td>${escapeHtml(it.tipoIntervencion)}</td>
+              <td>${estBadge}</td>
+              <td>${escapeHtml(it.operario)}</td>
+              <td>${it.numVisitas}v · ${it.minutosIntervencion}m</td>
+              <td>${it.kmTotales} km</td>
+              <td><strong>${fmt(it.ingresosNetos)}</strong></td>
+              <td>${fmt(it.costeMoIntervencion)}</td>
+              <td>${fmt(it.costeMoDesplazamiento)}</td>
+              <td>${fmt(it.costeVehiculoKm + it.costeVehiculoFijo)}</td>
+              <td>${fmt(it.costeGestionOficina)}</td>
+              <td>${fmt(it.costeNetoRepuestos)}</td>
+              <td style="color:#fbbf24;">${fmt(it.costeTotalReal)}</td>
+              <td style="color:${it.beneficioNetoReal >= 0 ? '#34d399' : '#f87171'};font-weight:900;">${fmt(it.beneficioNetoReal)} (${it.margenPct}%)</td>
+              <td>${flagsHtml || '<span style="color:#34d399;">OK</span>'}</td>
+            </tr>
+          `;
+        }).join('') || '<tr><td colspan="17" style="text-align:center;padding:20px;">No hay avisos que coincidan con los filtros.</td></tr>'}
+      </tbody>
+    </table>
+  `;
+}
+
+function setRentFugaFilter(fuga) {
+  rentFilters.fuga = fuga;
+  const sel = document.getElementById('rentFuga');
+  if (sel) sel.value = fuga;
+  loadRentabilidadData();
+}
+
+async function toggleRentConfigPanel() {
+  const panel = document.getElementById('rentConfigPanel');
+  if (!panel) return;
+  if (panel.style.display === 'block') {
+    panel.style.display = 'none';
+    return;
+  }
+  const res = await apiFetch('/api/admin/costes-config');
+  const data = await res.json();
+  const cfg = data.config || {};
+  const ops = cfg.costeHoraOperarios || {};
+  panel.style.display = 'block';
+  panel.innerHTML = `
+    <h4 style="margin:0 0 10px;">⚙️ Configuración de Costes Reales Empresa</h4>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-bottom:10px;">
+      <div class="field"><label>Jacobo (€/h)</label><input type="number" step="0.01" id="cfgOpJacobo" value="${ops.JACOBO ?? 51}" /></div>
+      <div class="field"><label>Alex (€/h)</label><input type="number" step="0.01" id="cfgOpAlex" value="${ops.ALEX ?? 24.24}" /></div>
+      <div class="field"><label>Roberto (€/h)</label><input type="number" step="0.01" id="cfgOpRoberto" value="${ops.ROBERTO ?? 25.54}" /></div>
+      <div class="field"><label>Dioni (€/h)</label><input type="number" step="0.01" id="cfgOpDioni" value="${ops.DIONI ?? 24}" /></div>
+      <div class="field"><label>Isma (€/h)</label><input type="number" step="0.01" id="cfgOpIsma" value="${ops.ISMAEL ?? 24.24}" /></div>
+      <div class="field"><label>Gestión Oficina (€/aviso)</label><input type="number" step="0.5" id="cfgAdminAviso" value="${cfg.costeAdminPorAviso ?? 20}" /></div>
+      <div class="field"><label>Coste Km defecto (€)</label><input type="number" step="0.01" id="cfgKmDef" value="${cfg.costeKmDefault ?? 0.25}" /></div>
+      <div class="field"><label>Coste/h Vehículo def. (€)</label><input type="number" step="0.5" id="cfgHoraVehDef" value="${cfg.costeHoraVehiculoDefault ?? 5}" /></div>
+    </div>
+    <button class="btn btn-primary" onclick="saveCostesConfigForm()">💾 Guardar Parámetros y Recalcular</button>
+  `;
+}
+
+async function saveCostesConfigForm() {
+  const payload = {
+    costeHoraOperarios: {
+      JACOBO: Number(document.getElementById('cfgOpJacobo').value) || 51,
+      ALEX: Number(document.getElementById('cfgOpAlex').value) || 24.24,
+      ROBERTO: Number(document.getElementById('cfgOpRoberto').value) || 25.54,
+      DIONI: Number(document.getElementById('cfgOpDioni').value) || 24,
+      ISMAEL: Number(document.getElementById('cfgOpIsma').value) || 24.24,
+      ISMA: Number(document.getElementById('cfgOpIsma').value) || 24.24
+    },
+    costeAdminPorAviso: Number(document.getElementById('cfgAdminAviso').value) || 0,
+    costeKmDefault: Number(document.getElementById('cfgKmDef').value) || 0.25,
+    costeHoraVehiculoDefault: Number(document.getElementById('cfgHoraVehDef').value) || 5
+  };
+  const res = await apiFetch('/api/admin/costes-config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (data.ok) {
+    document.getElementById('rentConfigPanel').style.display = 'none';
+    await loadRentabilidadData();
+  }
+}
+
+async function toggleRentGastoPanel() {
+  const panel = document.getElementById('rentGastoPanel');
+  if (!panel) return;
+  if (panel.style.display === 'block') {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  panel.innerHTML = `
+    <h4 style="margin:0 0 10px;">🧾 Registrar Gasto SAT / Repostaje / Proveedor</h4>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px;">
+      <div class="field"><label>Fecha</label><input type="date" id="gastoFecha" value="${new Date().toISOString().slice(0,10)}" /></div>
+      <div class="field"><label>Categoría</label>
+        <select id="gastoCat">
+          <option value="COMBUSTIBLE">⛽ Combustible / Vehículo</option>
+          <option value="REPUESTOS">🔩 Factura Repuestos / Portes</option>
+          <option value="MANTENIMIENTO_FLOTA">🚐 Taller / Seguro / ITV</option>
+          <option value="OTROS">📦 Otros gastos SAT</option>
+        </select>
+      </div>
+      <div class="field"><label>Proveedor / Concepto</label><input type="text" id="gastoConcepto" placeholder="Ej: Repsol / Dielle / Portes" /></div>
+      <div class="field"><label>Nº Aviso (opcional)</label><input type="text" id="gastoAviso" placeholder="Ej: 26285" /></div>
+      <div class="field"><label>Matrícula (opcional)</label><input type="text" id="gastoMat" placeholder="Ej: 9390HSV" /></div>
+      <div class="field"><label>Importe Total c/IVA (€)</label><input type="number" step="0.01" id="gastoImporte" placeholder="0.00" /></div>
+    </div>
+    <button class="btn btn-amber" onclick="submitNuevoGastoSat()">💾 Guardar Gasto</button>
+  `;
+}
+
+async function submitNuevoGastoSat() {
+  const payload = {
+    fecha: document.getElementById('gastoFecha').value,
+    categoria: document.getElementById('gastoCat').value,
+    concepto: document.getElementById('gastoConcepto').value,
+    avisoNumero: document.getElementById('gastoAviso').value,
+    matricula: document.getElementById('gastoMat').value,
+    importe: Number(document.getElementById('gastoImporte').value) || 0
+  };
+  const res = await apiFetch('/api/admin/gastos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (data.ok) {
+    document.getElementById('rentGastoPanel').style.display = 'none';
+    await loadRentabilidadData();
+  }
+}
+
+window.loadRentabilidadData = loadRentabilidadData;
+window.setRentFugaFilter = setRentFugaFilter;
+window.toggleRentConfigPanel = toggleRentConfigPanel;
+window.saveCostesConfigForm = saveCostesConfigForm;
+window.toggleRentGastoPanel = toggleRentGastoPanel;
+window.submitNuevoGastoSat = submitNuevoGastoSat;

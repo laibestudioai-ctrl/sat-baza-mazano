@@ -477,14 +477,185 @@ function inferGeo(address, seedIndex = 1) {
   };
 }
 
+// Configuración por defecto de costes reales SAT (basada en CONTABILIDAD SAT BAZA.xlsx)
+const DEFAULT_COSTES_CONFIG = {
+  costeHoraOperarios: {
+    JACOBO: 51.00,
+    ALEX: 24.24,
+    ROBERTO: 25.54,
+    DIONI: 24.00,
+    ISMAEL: 24.24,
+    ISMA: 24.24
+  },
+  costeAdminPorAviso: 20.00,
+  ivaDefecto: 0.21,
+  velocidadMediaKmH: 55,
+  costeKmDefault: 0.25,
+  costeHoraVehiculoDefault: 5.00,
+  vehiculosCoste: {
+    '7206GDH': { alias: 'Opel Vivaro (Jacobo)', costeKm: 0.25, costeHora: 5.00 },
+    '0986FVB': { alias: 'Mercedes Sprinter (Montaje)', costeKm: 0.25, costeHora: 5.00 },
+    '9390HSV': { alias: 'Dacia Dokker (Dioni/Rober)', costeKm: 0.11, costeHora: 2.00 },
+    '6572KPN': { alias: 'Mercedes Sprinter 311', costeKm: 0.25, costeHora: 5.00 },
+    '6772LPF': { alias: 'Honda Forza 750', costeKm: 0.10, costeHora: 2.00 },
+    '5823NBT': { alias: 'Renault Rafale', costeKm: 0.15, costeHora: 3.00 },
+    '4037NJX': { alias: 'Renault Trafic', costeKm: 0.14, costeHora: 3.00 },
+    '9851MFL': { alias: 'Renault Kangoo EV', costeKm: 0.05, costeHora: 2.00 }
+  }
+};
+
+function getCostesConfig() {
+  const cfg = db.costesConfig || {};
+  return {
+    costeHoraOperarios: { ...DEFAULT_COSTES_CONFIG.costeHoraOperarios, ...(cfg.costeHoraOperarios || {}) },
+    costeAdminPorAviso: cfg.costeAdminPorAviso !== undefined ? Number(cfg.costeAdminPorAviso) : DEFAULT_COSTES_CONFIG.costeAdminPorAviso,
+    ivaDefecto: cfg.ivaDefecto !== undefined ? Number(cfg.ivaDefecto) : DEFAULT_COSTES_CONFIG.ivaDefecto,
+    velocidadMediaKmH: cfg.velocidadMediaKmH !== undefined ? Number(cfg.velocidadMediaKmH) : DEFAULT_COSTES_CONFIG.velocidadMediaKmH,
+    costeKmDefault: cfg.costeKmDefault !== undefined ? Number(cfg.costeKmDefault) : DEFAULT_COSTES_CONFIG.costeKmDefault,
+    costeHoraVehiculoDefault: cfg.costeHoraVehiculoDefault !== undefined ? Number(cfg.costeHoraVehiculoDefault) : DEFAULT_COSTES_CONFIG.costeHoraVehiculoDefault,
+    vehiculosCoste: { ...DEFAULT_COSTES_CONFIG.vehiculosCoste, ...(cfg.vehiculosCoste || {}) }
+  };
+}
+
+function resolveOperarioCosteHora(opString, costeHoraOperarios) {
+  const s = String(opString || '').toUpperCase().trim();
+  if (!s) return costeHoraOperarios.JACOBO || 51.00;
+  for (const [k, v] of Object.entries(costeHoraOperarios)) {
+    if (s.includes(k)) return Number(v) || 24.24;
+  }
+  return 24.24;
+}
+
+function isAvisoAnulado(estado) {
+  const s = String(estado || '').toUpperCase();
+  return s.includes('ANULAD') || s.includes('CANCELAD');
+}
+
+function calcularRentabilidadAviso(aviso, fichajesAviso, costesConfig, repByCode) {
+  const fList = Array.isArray(fichajesAviso) ? fichajesAviso : [];
+  const estadoUpper = String(aviso.estadoAviso || '').toUpperCase();
+  const anulado = isAvisoAnulado(estadoUpper);
+
+  // Ingreso bruto: suma de fichajes terminados o sumaImportes o precioComunicado si ya finalizado
+  const sumaFichajes = fList.reduce((s, f) => s + (Number(f.importe ?? f.totalCobrado ?? 0) || 0), 0);
+  const ingresosBrutos = Number(aviso.sumaImportes || sumaFichajes || 0);
+  const iva = Number(costesConfig.ivaDefecto ?? 0.21);
+  const ingresosNetos = Number((ingresosBrutos / (1 + iva)).toFixed(2));
+
+  let minutosIntervencion = 0;
+  let costeMoIntervencion = 0;
+  let minutosDesplazamiento = 0;
+  let costeMoDesplazamiento = 0;
+  let costeVehiculoKm = 0;
+  let costeVehiculoFijo = 0;
+  let costeNetoRepuestos = 0;
+  let kmTotales = 0;
+
+  const velKmH = Math.max(20, Number(costesConfig.velocidadMediaKmH) || 55);
+
+  if (fList.length > 0) {
+    for (const f of fList) {
+      const mins = Math.max(0, Number(f.minutosTrabajados) || 0);
+      minutosIntervencion += mins;
+
+      const op1Rate = resolveOperarioCosteHora(f.operario || aviso.operarioPreasignado, costesConfig.costeHoraOperarios);
+      const op2Rate = f.companeroApoyo ? resolveOperarioCosteHora(f.companeroApoyo, costesConfig.costeHoraOperarios) : 0;
+      const rateTotal = op1Rate + op2Rate;
+
+      costeMoIntervencion += (mins / 60) * rateTotal;
+
+      const km = Math.max(0, Number(f.kmCalculados ?? aviso.kmIdaVuelta ?? 0) || 0);
+      kmTotales += km;
+      const minsViaje = f.minutosDesplazamiento !== undefined
+        ? Math.max(0, Number(f.minutosDesplazamiento) || 0)
+        : (km > 0 ? Math.round((km / velKmH) * 60) : 0);
+      minutosDesplazamiento += minsViaje;
+      costeMoDesplazamiento += (minsViaje / 60) * rateTotal;
+
+      const mat = String(f.matricula || aviso.matricula || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 7);
+      const vCfg = costesConfig.vehiculosCoste[mat] || null;
+      const cKm = vCfg ? Number(vCfg.costeKm) : Number(costesConfig.costeKmDefault || 0.25);
+      const cHoraV = vCfg ? Number(vCfg.costeHora) : Number(costesConfig.costeHoraVehiculoDefault || 5.00);
+
+      costeVehiculoKm += km * cKm;
+      costeVehiculoFijo += ((mins + minsViaje) / 60) * cHoraV;
+
+      for (const r of (Array.isArray(f.repuestosUsados) ? f.repuestosUsados : [])) {
+        const qty = Number(r.cantidad || 1) || 1;
+        const cat = repByCode.get(String(r.codigo || '').toUpperCase()) || repByCode.get(String(r.idArticulo || '').toUpperCase());
+        const netoUnit = Number(r.precioNeto ?? (cat ? cat.precioNeto : 0)) || 0;
+        costeNetoRepuestos += netoUnit * qty;
+      }
+    }
+  } else {
+    // Aviso sin fichajes aún: estimar desplazamiento si tiene kmIdaVuelta y no está anulado
+    kmTotales = !anulado ? Math.max(0, Number(aviso.kmIdaVuelta) || 0) : 0;
+  }
+
+  // Coste de oficina (20€): se aplica a TODO salvo avisos ANULADOS/CANCELADOS
+  const costeGestionOficina = anulado ? 0 : Number(costesConfig.costeAdminPorAviso ?? 20.00);
+
+  const costeTotalReal = Number((
+    costeMoIntervencion +
+    costeMoDesplazamiento +
+    costeVehiculoKm +
+    costeVehiculoFijo +
+    costeGestionOficina +
+    costeNetoRepuestos
+  ).toFixed(2));
+
+  const beneficioNetoReal = Number((ingresosNetos - costeTotalReal).toFixed(2));
+  const margenPct = ingresosNetos > 0 ? Number(((beneficioNetoReal / ingresosNetos) * 100).toFixed(1)) : (costeTotalReal > 0 ? -100 : 0);
+
+  const flagsFuga = [];
+  if (fList.length > 1) flagsFuga.push('SEGUNDA_VISITA');
+  if (!anulado && (ingresosBrutos > 0 || fList.length > 0) && beneficioNetoReal < 0) flagsFuga.push('MARGEN_NEGATIVO');
+  const tipoIntUpper = String(aviso.tipoIntervencion || '').toUpperCase();
+  if (tipoIntUpper.includes('GARANT') && beneficioNetoReal < 0) flagsFuga.push('GARANTIA_DEFICITARIA');
+  const costeViajeTotal = costeMoDesplazamiento + costeVehiculoKm + costeVehiculoFijo;
+  if (!anulado && costeViajeTotal > 0 && (ingresosNetos > 0 ? (costeViajeTotal / ingresosNetos) > 0.40 : costeViajeTotal > 30)) {
+    flagsFuga.push('DESPLAZAMIENTO_CARO');
+  }
+
+  return {
+    idAviso: aviso.idAviso,
+    numero: aviso.numero,
+    fecha: aviso.fecha || '',
+    clienteNombre: `${aviso.nombreCliente || ''} ${aviso.apellidosCliente || ''}`.trim(),
+    poblacion: aviso.poblacion || '',
+    maquina: `${aviso.marca || ''} ${aviso.modelo || ''}`.trim() || aviso.tipoAparato || '',
+    tipoIntervencion: aviso.tipoIntervencion || 'SAT NORMAL',
+    estadoAviso: aviso.estadoAviso || 'SIN PROCESAR',
+    operario: fList[0]?.operario ? String(fList[0].operario).split('@')[0].toUpperCase() : String(aviso.operarioPreasignado || 'SIN ASIGNAR').toUpperCase(),
+    numVisitas: fList.length,
+    minutosIntervencion,
+    minutosDesplazamiento,
+    kmTotales: Number(kmTotales.toFixed(1)),
+    ingresosBrutos: Number(ingresosBrutos.toFixed(2)),
+    ingresosNetos,
+    costeMoIntervencion: Number(costeMoIntervencion.toFixed(2)),
+    costeMoDesplazamiento: Number(costeMoDesplazamiento.toFixed(2)),
+    costeVehiculoKm: Number(costeVehiculoKm.toFixed(2)),
+    costeVehiculoFijo: Number(costeVehiculoFijo.toFixed(2)),
+    costeGestionOficina: Number(costeGestionOficina.toFixed(2)),
+    costeNetoRepuestos: Number(costeNetoRepuestos.toFixed(2)),
+    costeTotalReal,
+    beneficioNetoReal,
+    margenPct,
+    flagsFuga
+  };
+}
+
 // Cargar base de datos principal SAT
 let db = {
   meta: {},
   tarifas: {},
+  costesConfig: null,
   operarios: [],
   marcas: [],
   repuestos: [],
   gastosVehiculos: [],
+  gastosSat: [],
   contratosCm: [],
   citas: [],
   fichajes: [],
@@ -611,6 +782,202 @@ function queryAliquoLive(sql, apiKeyIndex = 0) {
     req.write(postData);
     req.end();
   });
+}
+
+function callAliquoApi(method, apiPath, bodyObj = null, apiKeyIndex = 0) {
+  return new Promise((resolve, reject) => {
+    const postData = bodyObj !== null ? JSON.stringify(bodyObj) : '';
+    const headers = {
+      'X-ApiKey': ALIQUO_KEYS[apiKeyIndex] || ALIQUO_KEYS[0],
+      'X-ApiVersion': '1.0',
+      'Accept': 'application/json'
+    };
+    if (bodyObj !== null) {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(postData);
+    }
+    const req = https.request({
+      hostname: 'api.aliquo.software',
+      path: apiPath,
+      method,
+      timeout: 12000,
+      headers
+    }, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        let parsed = data;
+        try { parsed = data ? JSON.parse(data) : {}; } catch {}
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ ok: true, statusCode: res.statusCode, data: parsed });
+        } else if (apiKeyIndex === 0 && ALIQUO_KEYS.length > 1 && (res.statusCode === 401 || res.statusCode === 403)) {
+          callAliquoApi(method, apiPath, bodyObj, 1).then(resolve).catch(reject);
+        } else {
+          const msg = (parsed && (parsed.Message || parsed.message || parsed.title)) || String(data).slice(0, 260);
+          reject(new Error(`Aliquo HTTP ${res.statusCode}: ${msg}`));
+        }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('Aliquo API timeout (12s)')));
+    req.on('error', err => {
+      if (apiKeyIndex === 0 && ALIQUO_KEYS.length > 1) {
+        callAliquoApi(method, apiPath, bodyObj, 1).then(resolve).catch(reject);
+      } else {
+        reject(err);
+      }
+    });
+    if (bodyObj !== null) req.write(postData);
+    req.end();
+  });
+}
+
+function getDefaultAliquoSerial() {
+  if (process.env.ALIQUO_SERIAL_CODE) return String(process.env.ALIQUO_SERIAL_CODE).trim().toUpperCase();
+  const yr = String(new Date().getFullYear()).slice(-2);
+  return `S${yr}`;
+}
+
+function resolveAliquoServiceCode(tipoIntervencion) {
+  const t = String(tipoIntervencion || '').toUpperCase();
+  if (t.includes('PUESTA EN MARCHA')) return 'MARCHA';
+  if (t.includes('DESHOLLIN') && t.includes('MANT')) return 'DESMANLIMEN';
+  if (t.includes('DESHOLLIN')) {
+    const m = new Date().getMonth() + 1;
+    return (m >= 5 && m <= 9) ? 'LIMDESMASEP' : 'DESOCA';
+  }
+  return 'MOBRA';
+}
+
+function formatDateEsShort(isoStr) {
+  const s = String(isoStr || nowMadridStr()).slice(0, 10);
+  const parts = s.split('-');
+  return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : s;
+}
+
+async function buildAliquoVolcadoPreview(aviso, fichaje, opts = {}) {
+  const serialCode = String(opts.serialCode || getDefaultAliquoSerial()).trim().toUpperCase();
+  const desglose = (fichaje && fichaje.desgloseTarifa) || {};
+  const repuestos = Array.isArray(fichaje && fichaje.repuestosUsados) ? fichaje.repuestosUsados : [];
+  const rawCod = String(aviso.codigoCliente || '').trim().toUpperCase();
+  const hasRealCode = rawCod && rawCod !== 'NO ES CLIENTE' && rawCod !== 'CLIENTE';
+
+  // Consultar en vivo si el cliente existe en Aliquo y leer sus Observaciones ("Varios") actuales
+  let clienteExisteEnAliquo = false;
+  let aliquoObservacionesPrevias = '';
+  let clienteAliquoLive = null;
+  if (hasRealCode) {
+    try {
+      const safeCod = rawCod.replace(/'/g, "''");
+      const rows = await queryAliquoLive(`SELECT TOP 1 Codigo, Nombre, Observaciones FROM Clientes WHERE Codigo = '${safeCod}'`);
+      if (Array.isArray(rows) && rows.length > 0) {
+        clienteExisteEnAliquo = true;
+        clienteAliquoLive = rows[0];
+        aliquoObservacionesPrevias = String(rows[0].Observaciones || '').trim();
+      }
+    } catch (e) {
+      // Si falla la lectura puntual, no bloqueamos el preview
+    }
+  }
+
+  // Construir líneas oficiales para POST /Note (SalesDeliveryNote, pricesIncludedVAT: true, storeCode: 'Alm')
+  const lines = [];
+  let order = 1;
+  const pushLine = (code, name, quantity, retailPrice) => {
+    const qty = Number(quantity) || 1;
+    const pvp = Number(Number(retailPrice || 0).toFixed(2));
+    lines.push({
+      type: 'Product',
+      order: order++,
+      code: String(code || 'MOBRA').trim().toUpperCase(),
+      name: String(name || 'SERVICIO TÉCNICO SAT').slice(0, 100),
+      quantity: qty,
+      retailPrice: pvp,
+      codeVAT: 'IVA21',
+      percentVAT: 21,
+      storeCode: 'Alm',
+      printable: true
+    });
+  };
+
+  if (Number(desglose.costeTarifaFija || 0) > 0) {
+    pushLine(
+      resolveAliquoServiceCode(aviso.tipoIntervencion),
+      `${aviso.tipoIntervencion || 'SERVICIO SAT'} - ${aviso.marca || ''} ${aviso.modelo || ''}`.trim(),
+      1,
+      desglose.costeTarifaFija
+    );
+  }
+  if (Number(desglose.costeSalida || 0) > 0) {
+    pushLine('SALIDA', 'SALIDA TÉCNICA SAT (incluye hasta 30 km I/V)', 1, desglose.costeSalida);
+  }
+  if (Number(desglose.costeManoObra || 0) > 0) {
+    const horas = Number(((fichaje.minutosTrabajados || 60) / 60).toFixed(2));
+    const pvpHora = horas > 0 ? Number((desglose.costeManoObra / horas).toFixed(2)) : desglose.costeManoObra;
+    pushLine('MOBRA', `MANO DE OBRA SAT (${fichaje.minutosTrabajados || 60} min) - ${fichaje.operario || aviso.operarioPreasignado || ''}`.trim(), horas, pvpHora);
+  }
+  if (Number(desglose.costeKmExtra || 0) > 0) {
+    pushLine('DESPLAZA', `DESPLAZAMIENTO KM EXTRA (${desglose.kmExtra || 0} km extra I/V)`, 1, desglose.costeKmExtra);
+  }
+  for (const r of repuestos) {
+    const qty = Number(r.cantidad || 1) || 1;
+    const pvpUnit = Number(r.pvp ?? r.precio ?? 0) || 0;
+    pushLine(r.codigo || 'MOBRA', r.descripcion || r.nombre || 'REPUESTO SAT', qty, pvpUnit);
+  }
+  if (lines.length === 0) {
+    const totalFallback = Number(fichaje.totalCobrado || fichaje.importe || aviso.sumaImportes || 0);
+    pushLine(
+      resolveAliquoServiceCode(aviso.tipoIntervencion),
+      `INTERVENCIÓN SAT #${aviso.numero} (${aviso.tipoIntervencion || 'SAT NORMAL'})`,
+      1,
+      totalFallback
+    );
+  }
+
+  const totalImporte = Number(lines.reduce((s, l) => s + (l.quantity * l.retailPrice), 0).toFixed(2));
+  const fechaEs = formatDateEsShort(fichaje.fin || aviso.fecha);
+  const opNombre = String(fichaje.operario || aviso.operarioPreasignado || 'TÉCNICO').split('@')[0].toUpperCase();
+  const notaOficina = String(aviso.observaciones || '').trim();
+  const notaTecnico = String(fichaje.trabajosRealizados || fichaje.notas || aviso.notasFichajes || '').trim();
+
+  const bloques = [];
+  if (notaOficina) bloques.push(`[OFICINA ${fechaEs} | SAT #${aviso.numero}]: ${notaOficina}`);
+  if (notaTecnico) bloques.push(`[TÉCNICO ${fechaEs} - ${opNombre} | SAT #${aviso.numero}]: ${notaTecnico}`);
+  if (bloques.length === 0) bloques.push(`[SAT #${aviso.numero} - ${fechaEs}]: Intervención finalizada (${aviso.tipoIntervencion || 'SAT NORMAL'})`);
+  const bloqueAnexarVarios = bloques.join('\n');
+  const observacionesVariosFinal = aliquoObservacionesPrevias
+    ? `${aliquoObservacionesPrevias}\n\n${bloqueAnexarVarios}`
+    : bloqueAnexarVarios;
+
+  const notePayload = {
+    type: 'SalesDeliveryNote',
+    serialCode,
+    date: `${nowMadridStr().slice(0, 10)}T00:00:00`,
+    propertyCode: hasRealCode ? rawCod : generarCodigoClienteAliquo(),
+    storeCode: 'Alm',
+    pricesIncludedVAT: true,
+    reference: `SAT #${aviso.numero}`,
+    description: `${aviso.tipoIntervencion || 'SAT'} · ${aviso.marca || ''} ${aviso.modelo || ''}`.trim().slice(0, 100),
+    observations: bloqueAnexarVarios,
+    lines
+  };
+
+  return {
+    idAviso: aviso.idAviso,
+    numero: aviso.numero,
+    yaVolcadoReal: Boolean(aviso.aliquoRealSynced),
+    aliquoDocPrevio: aviso.aliquoDoc || null,
+    aliquoIdNotaPrevio: aviso.aliquoIdNota || null,
+    serialCode,
+    clienteCodigo: notePayload.propertyCode,
+    clienteNombre: `${aviso.nombreCliente || ''} ${aviso.apellidosCliente || ''}`.trim(),
+    clienteExisteEnAliquo,
+    clienteAliquoLive,
+    totalImporte,
+    aliquoObservacionesPrevias,
+    bloqueAnexarVarios,
+    observacionesVariosFinal,
+    notePayload
+  };
 }
 
 // =========================================================================
@@ -1469,6 +1836,7 @@ const server = http.createServer(async (req, res) => {
         pathname === '/api/repuestos' ||
         pathname === '/api/marcas' ||
         pathname === '/api/vehiculos' ||
+        pathname === '/api/aliquo/preview-volcado' ||
         pathname === '/api/aliquo/volcar-albaran';
       if (isAdminRoute && !authUser.canSeeAdmin) {
         return sendJson(res, 403, { ok: false, code: 'FORBIDDEN_ADMIN', error: 'Acceso restringido a Dirección / Administración (Silvia, Chus, Leandro).' });
@@ -1478,6 +1846,9 @@ const server = http.createServer(async (req, res) => {
       }
       if (pathname === '/api/admin/export-contable' && !authUser.canExportContable) {
         return sendJson(res, 403, { ok: false, code: 'FORBIDDEN_CONTABLE', error: 'Exportación contable restringida a usuarios autorizados (Silvia, Chus, Leandro, Juan Pablo).' });
+      }
+      if ((pathname === '/api/admin/rentabilidad' || pathname === '/api/admin/costes-config' || pathname === '/api/admin/gastos') && !authUser.canSeeCostes) {
+        return sendJson(res, 403, { ok: false, code: 'FORBIDDEN_COSTES', error: 'Acceso a costes reales y márgenes restringido a usuarios autorizados (Silvia, Chus, Leandro, Juan Pablo).' });
       }
     }
 
@@ -1526,6 +1897,200 @@ const server = http.createServer(async (req, res) => {
         'Content-Length': payload.length
       });
       return res.end(payload);
+    }
+
+    // Módulo de Costes Reales y Rentabilidad SAT (Reemplazo automático del Excel de Silvia)
+    if (pathname === '/api/admin/rentabilidad' && req.method === 'GET') {
+      const desde = (parsedUrl.searchParams.get('desde') || '').trim().slice(0, 10);
+      const hasta = (parsedUrl.searchParams.get('hasta') || '').trim().slice(0, 10);
+      const operarioFiltro = (parsedUrl.searchParams.get('operario') || 'TODOS').trim().toUpperCase();
+      const fugaFiltro = (parsedUrl.searchParams.get('fuga') || 'TODAS').trim().toUpperCase();
+      const tipoFiltro = (parsedUrl.searchParams.get('tipoIntervencion') || 'TODOS').trim().toUpperCase();
+      const soloFinalizados = parsedUrl.searchParams.get('soloFinalizados') === '1';
+      const q = (parsedUrl.searchParams.get('q') || '').trim().toLowerCase();
+
+      const costesConfig = getCostesConfig();
+      const repByCode = new Map();
+      for (const r of (db.repuestos || [])) {
+        if (r.codigo) repByCode.set(String(r.codigo).toUpperCase(), r);
+        if (r.idArticulo) repByCode.set(String(r.idArticulo).toUpperCase(), r);
+      }
+
+      const fichajesByAviso = new Map();
+      for (const f of (db.fichajes || [])) {
+        if (!f.idAviso) continue;
+        if (f.estadoFichaje && f.estadoFichaje !== 'TERMINADO') continue;
+        const arr = fichajesByAviso.get(f.idAviso) || [];
+        arr.push(f);
+        fichajesByAviso.set(f.idAviso, arr);
+      }
+
+      const allItems = [];
+      for (const a of (db.avisos || [])) {
+        const fIn = String(a.fecha || '').slice(0, 10);
+        if (desde && fIn && fIn < desde) continue;
+        if (hasta && fIn && fIn > hasta) continue;
+        if (soloFinalizados && !isEstadoFinalizado(a.estadoAviso)) continue;
+
+        const fList = fichajesByAviso.get(a.idAviso) || [];
+        const calc = calcularRentabilidadAviso(a, fList, costesConfig, repByCode);
+
+        if (operarioFiltro !== 'TODOS' && !calc.operario.includes(operarioFiltro)) continue;
+        if (tipoFiltro !== 'TODOS' && !calc.tipoIntervencion.toUpperCase().includes(tipoFiltro)) continue;
+        if (fugaFiltro !== 'TODAS' && !calc.flagsFuga.includes(fugaFiltro)) continue;
+        if (q) {
+          const hay = [calc.numero, calc.clienteNombre, calc.poblacion, calc.maquina, calc.tipoIntervencion, calc.operario]
+            .map(v => String(v || '').toLowerCase()).join(' ');
+          if (!hay.includes(q)) continue;
+        }
+        allItems.push(calc);
+      }
+
+      // Agregados globales y desgloses por fuga/tipo/técnico
+      let totalIngresosBrutos = 0;
+      let totalIngresosNetos = 0;
+      let totalCosteReal = 0;
+      let totalBeneficio = 0;
+      let dineroFugadoPerdidas = 0;
+      let countSegundasVisitas = 0;
+      let countMargenNegativo = 0;
+      let countGarantiasDeficitarias = 0;
+      let countDesplazamientosCaros = 0;
+
+      const byTipo = new Map();
+      const byOperario = new Map();
+      const byPoblacion = new Map();
+
+      const addAgg = (map, key, item) => {
+        const cur = map.get(key) || { key, avisos: 0, ingresosNetos: 0, costeReal: 0, beneficio: 0, perdidas: 0 };
+        cur.avisos += 1;
+        cur.ingresosNetos += item.ingresosNetos;
+        cur.costeReal += item.costeTotalReal;
+        cur.beneficio += item.beneficioNetoReal;
+        if (item.beneficioNetoReal < 0) cur.perdidas += Math.abs(item.beneficioNetoReal);
+        map.set(key, cur);
+      };
+
+      for (const it of allItems) {
+        totalIngresosBrutos += it.ingresosBrutos;
+        totalIngresosNetos += it.ingresosNetos;
+        totalCosteReal += it.costeTotalReal;
+        totalBeneficio += it.beneficioNetoReal;
+        if (it.beneficioNetoReal < 0) dineroFugadoPerdidas += Math.abs(it.beneficioNetoReal);
+        if (it.flagsFuga.includes('SEGUNDA_VISITA')) countSegundasVisitas++;
+        if (it.flagsFuga.includes('MARGEN_NEGATIVO')) countMargenNegativo++;
+        if (it.flagsFuga.includes('GARANTIA_DEFICITARIA')) countGarantiasDeficitarias++;
+        if (it.flagsFuga.includes('DESPLAZAMIENTO_CARO')) countDesplazamientosCaros++;
+
+        addAgg(byTipo, it.tipoIntervencion || 'SAT NORMAL', it);
+        addAgg(byOperario, it.operario || 'SIN ASIGNAR', it);
+        if (it.poblacion) addAgg(byPoblacion, it.poblacion.toUpperCase(), it);
+      }
+
+      const formatAgg = (map, sortBy = 'beneficio') =>
+        Array.from(map.values())
+          .map(x => ({
+            ...x,
+            ingresosNetos: Number(x.ingresosNetos.toFixed(2)),
+            costeReal: Number(x.costeReal.toFixed(2)),
+            beneficio: Number(x.beneficio.toFixed(2)),
+            perdidas: Number(x.perdidas.toFixed(2)),
+            margenPct: x.ingresosNetos > 0 ? Number(((x.beneficio / x.ingresosNetos) * 100).toFixed(1)) : 0
+          }))
+          .sort((a, b) => sortBy === 'perdidas' ? b.perdidas - a.perdidas : b.avisos - a.avisos);
+
+      // Gastos extra registrados (gasolina, proveedores, portes)
+      const gastosList = (db.gastosSat || []).filter(g => {
+        const gf = String(g.fecha || '').slice(0, 10);
+        if (desde && gf && gf < desde) return false;
+        if (hasta && gf && gf > hasta) return false;
+        return true;
+      });
+      const totalGastosExtra = gastosList.reduce((s, g) => s + (Number(g.totalNeto ?? g.importe ?? 0) || 0), 0);
+
+      const margenGlobalPct = totalIngresosNetos > 0 ? Number(((totalBeneficio / totalIngresosNetos) * 100).toFixed(1)) : 0;
+
+      return sendJson(res, 200, {
+        ok: true,
+        kpis: {
+          totalAvisos: allItems.length,
+          totalIngresosBrutos: Number(totalIngresosBrutos.toFixed(2)),
+          totalIngresosNetos: Number(totalIngresosNetos.toFixed(2)),
+          totalCosteReal: Number(totalCosteReal.toFixed(2)),
+          totalBeneficio: Number(totalBeneficio.toFixed(2)),
+          margenGlobalPct,
+          dineroFugadoPerdidas: Number(dineroFugadoPerdidas.toFixed(2)),
+          totalGastosExtra: Number(totalGastosExtra.toFixed(2)),
+          fugas: {
+            segundasVisitas: countSegundasVisitas,
+            margenNegativo: countMargenNegativo,
+            garantiasDeficitarias: countGarantiasDeficitarias,
+            desplazamientosCaros: countDesplazamientosCaros
+          }
+        },
+        porTipo: formatAgg(byTipo),
+        porOperario: formatAgg(byOperario),
+        porPoblacion: formatAgg(byPoblacion, 'perdidas').slice(0, 20),
+        items: allItems.slice(0, 300),
+        totalItems: allItems.length
+      });
+    }
+
+    if (pathname === '/api/admin/costes-config' && req.method === 'GET') {
+      return sendJson(res, 200, { ok: true, config: getCostesConfig() });
+    }
+
+    if (pathname === '/api/admin/costes-config' && req.method === 'PUT') {
+      const body = await readJsonBody(req);
+      const current = getCostesConfig();
+      const updated = {
+        ...current,
+        costeAdminPorAviso: body.costeAdminPorAviso !== undefined ? Number(body.costeAdminPorAviso) : current.costeAdminPorAviso,
+        ivaDefecto: body.ivaDefecto !== undefined ? Number(body.ivaDefecto) : current.ivaDefecto,
+        velocidadMediaKmH: body.velocidadMediaKmH !== undefined ? Number(body.velocidadMediaKmH) : current.velocidadMediaKmH,
+        costeKmDefault: body.costeKmDefault !== undefined ? Number(body.costeKmDefault) : current.costeKmDefault,
+        costeHoraVehiculoDefault: body.costeHoraVehiculoDefault !== undefined ? Number(body.costeHoraVehiculoDefault) : current.costeHoraVehiculoDefault,
+        costeHoraOperarios: body.costeHoraOperarios && typeof body.costeHoraOperarios === 'object'
+          ? { ...current.costeHoraOperarios, ...body.costeHoraOperarios }
+          : current.costeHoraOperarios,
+        vehiculosCoste: body.vehiculosCoste && typeof body.vehiculosCoste === 'object'
+          ? { ...current.vehiculosCoste, ...body.vehiculosCoste }
+          : current.vehiculosCoste
+      };
+      db.costesConfig = updated;
+      saveDb();
+      return sendJson(res, 200, { ok: true, config: updated });
+    }
+
+    if (pathname === '/api/admin/gastos' && req.method === 'GET') {
+      const gastos = Array.isArray(db.gastosSat) ? db.gastosSat : [];
+      return sendJson(res, 200, { ok: true, total: gastos.length, gastos: gastos.slice(0, 200) });
+    }
+
+    if (pathname === '/api/admin/gastos' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!Array.isArray(db.gastosSat)) db.gastosSat = [];
+      const importe = Number(body.importe || 0) || 0;
+      const ivaPct = body.ivaPct !== undefined ? Number(body.ivaPct) : 21;
+      const totalNeto = body.totalNeto !== undefined ? Number(body.totalNeto) : Number((importe / (1 + ivaPct / 100)).toFixed(2));
+      const nuevo = {
+        idGasto: crypto.randomBytes(4).toString('hex'),
+        fecha: String(body.fecha || nowMadridStr().slice(0, 10)).slice(0, 10),
+        categoria: String(body.categoria || 'REPUESTOS').trim(),
+        proveedor: String(body.proveedor || '').trim(),
+        concepto: String(body.concepto || '').trim(),
+        avisoNumero: body.avisoNumero ? String(body.avisoNumero).trim() : '',
+        matricula: body.matricula ? String(body.matricula).toUpperCase().trim() : '',
+        operario: body.operario ? String(body.operario).trim() : '',
+        metodoPago: String(body.metodoPago || 'TARJETA').trim(),
+        importe: Number(importe.toFixed(2)),
+        ivaPct,
+        totalNeto: Number(totalNeto.toFixed(2)),
+        registradoPor: authUser.nombre
+      };
+      db.gastosSat.unshift(nuevo);
+      saveDb();
+      return sendJson(res, 201, { ok: true, gasto: nuevo });
     }
 
     // 1. BOOTSTRAP GENERAL (KPIs, Operarios, Marcas, Repuestos, Tarifas, Vehículos)
@@ -1587,7 +2152,33 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, query: q, ...result });
     }
 
-    // 2.1 VOLCADO DIRECTO DE ALBARÁN A ALIQUO EN 1 CLIC (Panel de Administración)
+    // 2.0 VISTA PREVIA SEGURA DE VOLCADO A ALIQUO (Solo lectura — Fase 2)
+    if (pathname === '/api/aliquo/preview-volcado' && req.method === 'GET') {
+      const idAviso = parsedUrl.searchParams.get('idAviso') || '';
+      const serialCode = parsedUrl.searchParams.get('serialCode') || '';
+      const av = db.avisos.find(a => a.idAviso === idAviso || String(a.numero) === String(idAviso));
+      if (!av) return sendJson(res, 404, { ok: false, error: 'Aviso no encontrado' });
+
+      const fichajesAviso = db.fichajes.filter(f => f.idAviso === av.idAviso && f.estadoFichaje === 'TERMINADO');
+      const fichaje = fichajesAviso[0] || {
+        idFichaje: 'fich-' + av.numero,
+        idAviso: av.idAviso,
+        avisoNumero: av.numero,
+        operario: av.operarioPreasignado || 'JACOBO',
+        fin: nowMadridStr(),
+        minutosTrabajados: 45,
+        importe: av.sumaImportes || 0,
+        metodoPago: 'EFECTIVO',
+        notas: av.notasFichajes || av.observaciones || 'Intervención SAT finalizada',
+        repuestosUsados: [],
+        desgloseTarifa: null
+      };
+
+      const preview = await buildAliquoVolcadoPreview(av, fichaje, { serialCode });
+      return sendJson(res, 200, { ok: true, preview });
+    }
+
+    // 2.1 VOLCADO DE ALBARÁN A ALIQUO (Modo Local o REAL contra api.aliquo.software — Fase 2)
     if (pathname === '/api/aliquo/volcar-albaran' && req.method === 'POST') {
       const body = await readJsonBody(req);
       const av = db.avisos.find(a => a.idAviso === body.idAviso || String(a.numero) === String(body.numero));
@@ -1608,13 +2199,100 @@ const server = http.createServer(async (req, res) => {
         desgloseTarifa: null
       };
 
+      // MODO REAL CONTRA API OFICIAL DE ALIQUO (POST /Note + opcional POST/PUT /Data)
+      if (body.modoReal === true) {
+        if (av.aliquoRealSynced && !body.force) {
+          return sendJson(res, 409, {
+            ok: false,
+            error: `Este aviso ya fue volcado a Aliquo (${av.aliquoDoc || av.aliquoIdNota}). Bloqueado para evitar duplicados.`
+          });
+        }
+        const preview = await buildAliquoVolcadoPreview(av, fichaje, { serialCode: body.serialCode });
+        const customObs = typeof body.bloqueAnexarVarios === 'string' && body.bloqueAnexarVarios.trim()
+          ? body.bloqueAnexarVarios.trim()
+          : preview.bloqueAnexarVarios;
+        preview.notePayload.observations = customObs;
+
+        let clienteCreadoReal = false;
+        if (!preview.clienteExisteEnAliquo && body.crearClienteSiNoExiste !== false) {
+          await callAliquoApi('POST', '/Data', [{
+            table: 'Clientes',
+            fields: [
+              { field: 'Codigo', value: preview.clienteCodigo, isKey: true },
+              { field: 'Nombre', value: preview.clienteNombre || 'CLIENTE SAT', isKey: false },
+              { field: 'Direccion', value: av.direccionCompleta || '', isKey: false },
+              { field: 'Poblacion', value: av.poblacion || 'VALLADOLID', isKey: false },
+              { field: 'Provincia', value: 'VALLADOLID', isKey: false },
+              { field: 'Telefono', value: av.telefono1 || '', isKey: false },
+              { field: 'Email', value: av.email || '', isKey: false },
+              { field: 'Observaciones', value: customObs, isKey: false }
+            ]
+          }]);
+          clienteCreadoReal = true;
+          av.codigoCliente = preview.clienteCodigo;
+        }
+
+        const noteRes = await callAliquoApi('POST', '/Note', preview.notePayload);
+        const createdNote = noteRes.data || {};
+        const aliquoIdNota = createdNote.id || createdNote.Id || null;
+        const aliquoNum = createdNote.number || createdNote.Number || av.numero;
+        const aliquoDoc = `${preview.serialCode}-${aliquoNum}`;
+
+        let variosActualizado = false;
+        let variosError = null;
+        if (body.actualizarVarios !== false && !clienteCreadoReal) {
+          const finalVarios = preview.aliquoObservacionesPrevias
+            ? `${preview.aliquoObservacionesPrevias}\n\n${customObs}`
+            : customObs;
+          try {
+            await callAliquoApi('PUT', '/Data', [{
+              table: 'Clientes',
+              fields: [
+                { field: 'Codigo', value: preview.clienteCodigo, isKey: true },
+                { field: 'Observaciones', value: finalVarios, isKey: false }
+              ]
+            }]);
+            variosActualizado = true;
+          } catch (vErr) {
+            variosError = vErr.message;
+          }
+        } else if (clienteCreadoReal) {
+          variosActualizado = true;
+        }
+
+        const alb = sincronizarAlbaranConAliquo(av, fichaje);
+        alb.idAlbaran = aliquoDoc;
+        alb.aliquoIdNota = aliquoIdNota;
+        alb.modoReal = true;
+        alb.serialCode = preview.serialCode;
+
+        av.estadoAviso = 'PASADO ALIQUO';
+        av.aliquoRealSynced = true;
+        av.aliquoIdNota = aliquoIdNota;
+        av.aliquoDoc = aliquoDoc;
+        av.aliquoFecha = nowMadridStr();
+        saveDb();
+
+        return sendJson(res, 200, {
+          ok: true,
+          modoReal: true,
+          albaran: alb,
+          aviso: av,
+          aliquoIdNota,
+          aliquoDoc,
+          clienteCreadoReal,
+          variosActualizado,
+          variosError
+        });
+      }
+
       const alb = sincronizarAlbaranConAliquo(av, fichaje);
       av.estadoAviso = 'PASADO ALIQUO';
       av.aliquoDoc = alb.idAlbaran;
       av.aliquoFecha = alb.fechaGenerado;
       saveDb();
 
-      return sendJson(res, 200, { ok: true, albaran: alb, aviso: av });
+      return sendJson(res, 200, { ok: true, modoReal: false, albaran: alb, aviso: av });
     }
 
     // 2.2 LISTAR ALBARANES SINCRONIZADOS CON ALIQUO
