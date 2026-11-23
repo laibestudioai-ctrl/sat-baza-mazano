@@ -858,8 +858,9 @@ async function buildAliquoVolcadoPreview(aviso, fichaje, opts = {}) {
   const serialCode = String(opts.serialCode || getDefaultAliquoSerial()).trim().toUpperCase();
   const desglose = (fichaje && fichaje.desgloseTarifa) || {};
   const repuestos = Array.isArray(fichaje && fichaje.repuestosUsados) ? fichaje.repuestosUsados : [];
-  const rawCod = String(aviso.codigoCliente || '').trim().toUpperCase();
-  const hasRealCode = rawCod && rawCod !== 'NO ES CLIENTE' && rawCod !== 'CLIENTE';
+  const rawCodFull = String(aviso.codigoCliente || '').trim().toUpperCase();
+  const rawCod = rawCodFull.split(/\s*[-|]\s*/)[0].trim();
+  const hasRealCode = Boolean(rawCod) && rawCod !== 'NO ES CLIENTE' && rawCod !== 'CLIENTE' && !rawCodFull.startsWith('NO ES CLIENTE');
 
   // Consultar en vivo si el cliente existe en Aliquo y leer sus Observaciones ("Varios") actuales
   let clienteExisteEnAliquo = false;
@@ -935,7 +936,7 @@ async function buildAliquoVolcadoPreview(aviso, fichaje, opts = {}) {
 
   const totalImporte = Number(lines.reduce((s, l) => s + (l.quantity * l.retailPrice), 0).toFixed(2));
   const fechaEs = formatDateEsShort(fichaje.fin || aviso.fecha);
-  const opNombre = String(fichaje.operario || aviso.operarioPreasignado || 'TÉCNICO').split('@')[0].toUpperCase();
+  const opNombre = String(fichaje.operario || aviso.operarioPreasignado || 'TÉCNICO').split('@')[0].split('.')[0].toUpperCase();
   const notaOficina = String(aviso.observaciones || '').trim();
   const notaTecnico = String(fichaje.trabajosRealizados || fichaje.notas || aviso.notasFichajes || '').trim();
 
